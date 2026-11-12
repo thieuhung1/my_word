@@ -423,7 +423,7 @@ pub fn deserialize_document(
                 }
             }
         } else if let Some(rest) = line.strip_prefix("SPAN=")
-            && let Some(span) = parse_span_line(rest, content.len())
+            && let Some(span) = parse_span_line(rest, &content)
         {
             spans.push(span);
         }
@@ -439,13 +439,17 @@ pub fn deserialize_document(
     (content, spans, aligns)
 }
 
-fn parse_span_line(s: &str, max_len: usize) -> Option<StyleSpan> {
+fn parse_span_line(s: &str, content: &str) -> Option<StyleSpan> {
     let mut parts = s.split('|');
     let range_str = parts.next()?;
     let (a, b) = range_str.split_once("..")?;
     let start: usize = a.parse().ok()?;
     let end: usize = b.parse().ok()?;
-    if start >= end || end > max_len {
+    if start >= end
+        || end > content.len()
+        || !content.is_char_boundary(start)
+        || !content.is_char_boundary(end)
+    {
         return None;
     }
 
@@ -460,7 +464,9 @@ fn parse_span_line(s: &str, max_len: usize) -> Option<StyleSpan> {
         } else if let Some(v) = part.strip_prefix("S:") {
             style.strikethrough = v == "1";
         } else if let Some(v) = part.strip_prefix("SZ:") {
-            if let Ok(sz) = v.parse::<f32>() {
+            if let Ok(sz) = v.parse::<f32>()
+                && sz.is_finite()
+            {
                 style.font_size = sz.clamp(8.0, 72.0);
             }
         } else if let Some(v) = part.strip_prefix("C:") {
@@ -552,5 +558,24 @@ mod tests {
         assert_eq!(matches.len(), 2);
         assert_eq!(&text[matches[0].0..matches[0].1], "Việt");
         assert_eq!(&text[matches[1].0..matches[1].1], "việt");
+    }
+
+    #[test]
+    fn test_deserialize_mwd_rejects_non_char_boundary_and_nan_size() {
+        // "Tiếng" có 'ế' tại bytes 2..5 -> byte 3 nằm giữa ký tự UTF-8; SZ:NaN phải bị bỏ qua
+        let crafted =
+            "MYWORD_V1\nALIGN=L\nSPAN=1..3|B:1|SZ:NaN\nSPAN=0..7|B:0|SZ:16.0\n---CONTENT---\nTiếng";
+        let (content, spans, _) = deserialize_document(crafted, Path::new("crafted.mwd"));
+        assert_eq!(content, "Tiếng");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start, 0);
+        assert_eq!(spans[0].end, "Tiếng".len());
+        assert!(!spans[0].style.bold);
+        assert_eq!(spans[0].style.font_size, 16.0);
+
+        let nan_crafted = "MYWORD_V1\nALIGN=L\nSPAN=0..7|B:1|SZ:NaN\n---CONTENT---\nTiếng";
+        let (_, nan_spans, _) = deserialize_document(nan_crafted, Path::new("nan.mwd"));
+        assert!(nan_spans[0].style.font_size.is_finite());
+        assert_eq!(nan_spans[0].style.font_size, TextStyle::default().font_size);
     }
 }

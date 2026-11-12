@@ -10,6 +10,15 @@ use unicode_segmentation::UnicodeSegmentation;
 const MAX_UNDO_SNAPSHOTS: usize = 50;
 const UNDO_COALESCE_MS: u128 = 800;
 
+/// Ép offset byte về ranh giới ký tự UTF-8 hợp lệ (<= `s.len()`) để tránh panic khi cắt chuỗi
+pub fn clamp_to_char_boundary(s: &str, offset: usize) -> usize {
+    let mut clamped = offset.min(s.len());
+    while clamped > 0 && !s.is_char_boundary(clamped) {
+        clamped -= 1;
+    }
+    clamped
+}
+
 /// Chế độ gõ tiếng Việt
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InputMethodMode {
@@ -215,7 +224,7 @@ impl EditorState {
 
     fn restore_snapshot(&mut self, snap: DocumentSnapshot) {
         self.content = snap.content;
-        self.caret_byte_offset = snap.caret_byte_offset.min(self.content.len());
+        self.caret_byte_offset = clamp_to_char_boundary(&self.content, snap.caret_byte_offset);
         self.spans = snap.spans;
         self.para_alignments = snap.para_alignments;
         self.selection_start = None;
@@ -248,12 +257,9 @@ impl EditorState {
 
     pub fn selected_range(&self) -> Option<(usize, usize)> {
         let start = self.selection_start?;
-        if start != self.caret_byte_offset {
-            let from = start.min(self.caret_byte_offset).min(self.content.len());
-            let to = start.max(self.caret_byte_offset).min(self.content.len());
-            return Some((from, to));
-        }
-        None
+        let a = clamp_to_char_boundary(&self.content, start);
+        let b = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        (a != b).then(|| (a.min(b), a.max(b)))
     }
 
     fn remove_range_and_sync(&mut self, from: usize, to: usize) {
@@ -423,11 +429,22 @@ impl EditorState {
     }
 
     pub fn backspace(&mut self) {
-        if self.delete_selection() || self.caret_byte_offset == 0 {
+        if self.selected_range().is_some() {
+            self.save_undo();
+            self.delete_selection();
+            self.sync_active_style_to_caret();
             return;
         }
-        let end = self.caret_byte_offset;
-        if let Some((offset, _)) = self.content[..end].grapheme_indices(true).next_back() {
+        if self.caret_byte_offset == 0 {
+            return;
+        }
+        let end = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        let grapheme_offset = self.content[..end]
+            .grapheme_indices(true)
+            .next_back()
+            .map(|(offset, _)| offset);
+        if let Some(offset) = grapheme_offset {
+            self.save_undo_typing(false);
             self.remove_range_and_sync(offset, end);
             self.caret_byte_offset = offset;
             if end > offset {
@@ -461,12 +478,24 @@ impl EditorState {
     }
 
     pub fn delete_forward(&mut self) {
-        if self.delete_selection() || self.caret_byte_offset >= self.content.len() {
+        if self.selected_range().is_some() {
+            self.save_undo();
+            self.delete_selection();
+            self.sync_active_style_to_caret();
             return;
         }
-        let start = self.caret_byte_offset;
-        if let Some((_, grapheme)) = self.content[start..].grapheme_indices(true).next() {
-            let end = start + grapheme.len();
+        if self.caret_byte_offset >= self.content.len() {
+            return;
+        }
+        let start = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        self.caret_byte_offset = start;
+        let grapheme_len = self.content[start..]
+            .grapheme_indices(true)
+            .next()
+            .map(|(_, g)| g.len());
+        if let Some(len) = grapheme_len {
+            self.save_undo_typing(false);
+            let end = start + len;
             self.remove_range_and_sync(start, end);
         }
     }
@@ -595,7 +624,7 @@ impl EditorState {
             shift_spans_on_delete(&mut self.spans, from, to);
             shift_spans_on_insert(&mut self.spans, from, rep_norm.len(), style);
         }
-        self.caret_byte_offset = self.caret_byte_offset.min(self.content.len());
+        self.caret_byte_offset = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
         self.selection_start = None;
         self.sync_para_alignments();
         self.mark_content_changed();
@@ -789,5 +818,32 @@ mod tests {
             ed.para_alignments,
             vec![TextAlignment::Center, TextAlignment::Justify]
         );
+    }
+
+    #[test]
+    fn test_undo_restores_backspace_and_delete_selection() {
+        let mut ed = EditorState::from_plain_text("Xin chào");
+        ed.backspace();
+        assert_eq!(ed.content, "Xin chà");
+        assert!(ed.undo());
+        assert_eq!(ed.content, "Xin chào");
+
+        ed.selection_start = Some(0);
+        ed.caret_byte_offset = 4;
+        ed.backspace();
+        assert_eq!(ed.content, "chào");
+        assert!(ed.undo());
+        assert_eq!(ed.content, "Xin chào");
+    }
+
+    #[test]
+    fn test_replace_all_preserves_utf8_caret_boundary() {
+        let mut ed = EditorState::from_plain_text("abc tiếng Việt");
+        // Đặt con trỏ vào byte 8 (trước/sau vùng bị rút ngắn khiến độ dài dịch chuyển)
+        ed.caret_byte_offset = ed.content.find("Việt").unwrap() + "Việt".len();
+        ed.replace_all_matches("abc", "cộng hòa", false);
+        assert!(ed.content.is_char_boundary(ed.caret_byte_offset));
+        ed.backspace();
+        assert!(ed.content.is_char_boundary(ed.caret_byte_offset));
     }
 }

@@ -538,6 +538,7 @@ pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: 
                             app.active_match_idx,
                         )
                     {
+                        app.refresh_find_cache();
                         app.set_status("Đã thay thế 1 kết quả");
                     }
                     if ui.button("Thay tất cả").clicked() {
@@ -546,6 +547,7 @@ pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: 
                             &app.replace_query,
                             app.find_case_sensitive,
                         );
+                        app.refresh_find_cache();
                         if count > 0 {
                             app.set_status(&format!("Đã thay thế {} kết quả", count));
                         }
@@ -666,7 +668,8 @@ pub fn render_page_canvas(
     };
 
     let doc_text_color = Color32::from_rgb(30, 41, 59);
-    let show_find_hl = app.find_bar_open && !app.cached_matches.is_empty();
+    let show_find_hl =
+        app.find_bar_open && !app.editor.find_dirty && !app.cached_matches.is_empty();
     let zoom = app.zoom;
 
     if let Some(cache) = app.cached_layout.as_ref() {

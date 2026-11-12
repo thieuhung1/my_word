@@ -60,9 +60,21 @@ pub fn write_document(path: &Path, editor: &EditorState) -> Result<(), std::io::
     std::fs::write(path, payload.as_bytes())
 }
 
+const MAX_DOCUMENT_BYTES: u64 = 32 * 1024 * 1024;
+
 pub fn load_document(
     path: &Path,
 ) -> Result<(String, Vec<StyleSpan>, Vec<TextAlignment>), std::io::Error> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > MAX_DOCUMENT_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Tệp quá lớn (vượt giới hạn {} MB)",
+                MAX_DOCUMENT_BYTES / (1024 * 1024)
+            ),
+        ));
+    }
     let raw = std::fs::read_to_string(path)?;
     Ok(deserialize_document(&raw, path))
 }
