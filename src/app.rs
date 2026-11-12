@@ -326,6 +326,7 @@ impl MyWordApp {
                     self.set_status("Đã chèn ngắt trang");
                 }
                 egui::Key::Backspace => self.editor.delete_word_backward(),
+                egui::Key::Delete => self.editor.delete_word_forward(),
                 _ => {}
             }
         } else {

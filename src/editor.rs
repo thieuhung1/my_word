@@ -497,14 +497,45 @@ impl EditorState {
             self.save_undo_typing(false);
             let end = start + len;
             self.remove_range_and_sync(start, end);
+            self.sync_active_style_to_caret();
+        }
+    }
+
+    pub fn delete_word_forward(&mut self) {
+        if self.selected_range().is_some() {
+            self.save_undo();
+            self.delete_selection();
+            self.sync_active_style_to_caret();
+            return;
+        }
+        if self.caret_byte_offset >= self.content.len() {
+            return;
+        }
+        let start = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        let suffix = &self.content[start..];
+        let mut rel_end = suffix.len();
+        let mut passed_non_ws = false;
+        for (idx, ch) in suffix.char_indices() {
+            if ch.is_whitespace() {
+                if passed_non_ws {
+                    rel_end = idx;
+                    break;
+                }
+            } else {
+                passed_non_ws = true;
+            }
+        }
+        if rel_end > 0 {
+            self.save_undo();
+            self.remove_range_and_sync(start, start + rel_end);
+            self.caret_byte_offset = start;
+            self.sync_active_style_to_caret();
         }
     }
 
     pub fn move_left_with_selection(&mut self, keep_selection: bool) {
-        if !keep_selection && self.selection_start.is_some() {
-            if let Some((from, _)) = self.selected_range() {
-                self.caret_byte_offset = from;
-            }
+        if !keep_selection && let Some((from, _)) = self.selected_range() {
+            self.caret_byte_offset = from;
             self.selection_start = None;
             self.sync_active_style_to_caret();
             return;
@@ -526,10 +557,8 @@ impl EditorState {
     }
 
     pub fn move_right_with_selection(&mut self, keep_selection: bool) {
-        if !keep_selection && self.selection_start.is_some() {
-            if let Some((_, to)) = self.selected_range() {
-                self.caret_byte_offset = to;
-            }
+        if !keep_selection && let Some((_, to)) = self.selected_range() {
+            self.caret_byte_offset = to;
             self.selection_start = None;
             self.sync_active_style_to_caret();
             return;
@@ -561,7 +590,33 @@ impl EditorState {
     }
 
     pub fn select_word_at(&mut self, byte_offset: usize) {
-        let clamped = byte_offset.min(self.content.len());
+        let clamped = clamp_to_char_boundary(&self.content, byte_offset);
+        if self.content.is_empty() {
+            return;
+        }
+        if self.content[clamped..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace())
+        {
+            let start = self.content[..clamped]
+                .char_indices()
+                .rev()
+                .take_while(|&(_, c)| c.is_whitespace() && c != '\n' && c != PAGE_BREAK_CHAR)
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(clamped);
+            let rel_end = self.content[clamped..]
+                .char_indices()
+                .take_while(|&(_, c)| c.is_whitespace() && c != '\n' && c != PAGE_BREAK_CHAR)
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            self.selection_start = Some(start);
+            self.caret_byte_offset = clamped + rel_end;
+            self.sync_active_style_to_caret();
+            return;
+        }
         let start = self.content[..clamped]
             .char_indices()
             .rev()
@@ -845,5 +900,20 @@ mod tests {
         assert!(ed.content.is_char_boundary(ed.caret_byte_offset));
         ed.backspace();
         assert!(ed.content.is_char_boundary(ed.caret_byte_offset));
+    }
+
+    #[test]
+    fn test_delete_forward_word_and_whitespace_double_click() {
+        let mut ed = EditorState::from_plain_text("Cộng hòa Xã hội");
+        // Đặt con trỏ ngay sau "Cộng" (trước " hòa") và xóa chữ phía sau -> phải giữ nguyên "Cộng"
+        ed.caret_byte_offset = "Cộng".len();
+        ed.delete_word_forward();
+        assert_eq!(ed.content, "Cộng Xã hội");
+
+        // Double-click vào dấu cách giữa "Cộng" và "Xã" không được chọn lùi vào "Cộng"
+        ed.select_word_at("Cộng".len());
+        assert_eq!(ed.copy_selection(), Some(" ".to_string()));
+        ed.delete_forward();
+        assert_eq!(ed.content, "CộngXã hội");
     }
 }

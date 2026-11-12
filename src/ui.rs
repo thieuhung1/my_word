@@ -686,19 +686,25 @@ pub fn render_page_canvas(
                                 egui::Sense::click_and_drag(),
                             );
 
+                            let (primary_just_pressed, press_origin) = ctx
+                                .input(|i| (i.pointer.primary_pressed(), i.pointer.press_origin()));
                             if response.double_clicked() {
                                 if let Some(pos) = response.interact_pointer_pos() {
                                     app.pending_pointer_query =
                                         Some(PointerQuery::DoubleClick(pos));
                                     ctx.memory_mut(|m| m.request_focus(response.id));
                                 }
-                            } else if response.drag_started() || response.clicked() {
-                                if let Some(pos) = response.interact_pointer_pos() {
+                            } else if response.clicked()
+                                || (primary_just_pressed && response.hovered())
+                            {
+                                if let Some(pos) = response.interact_pointer_pos().or(press_origin)
+                                {
                                     app.pending_pointer_query = Some(PointerQuery::Click(pos));
                                     ctx.memory_mut(|m| m.request_focus(response.id));
                                 }
                             } else if response.dragged()
                                 && let Some(pos) = response.interact_pointer_pos()
+                                && press_origin.is_some_and(|orig| orig.distance(pos) > 3.0)
                             {
                                 app.pending_pointer_query = Some(PointerQuery::Drag(pos));
                             }
@@ -885,24 +891,22 @@ pub fn render_page_canvas(
                             if let Some(q) = pointer_query
                                 && !ptr_state.resolved
                                 && rect.contains(pointer_pos(q))
-                                && let Some(last_placed) = placed_list.last()
+                                && let (Some(first_placed), Some(last_placed)) =
+                                    (placed_list.first(), placed_list.last())
                             {
-                                let target_b = cache.paras[last_placed.para_data_idx].end;
-                                match q {
-                                    PointerQuery::Click(_) => {
-                                        ptr_state.caret_target = Some(target_b);
-                                        ptr_state.sel_target = Some(None);
-                                        ptr_state.sync_style = true;
-                                    }
-                                    PointerQuery::Drag(_) => {
-                                        if app.editor.selection_start.is_none() {
-                                            ptr_state.sel_target =
-                                                Some(Some(app.editor.caret_byte_offset));
-                                        }
-                                        ptr_state.caret_target = Some(target_b);
-                                    }
-                                    _ => {}
-                                }
+                                let pos = pointer_pos(q);
+                                let target_b = if pos.y < content_origin.y {
+                                    cache.paras[first_placed.para_data_idx].start
+                                } else {
+                                    cache.paras[last_placed.para_data_idx].end
+                                };
+                                ptr_state.apply_hit(
+                                    q,
+                                    target_b,
+                                    keep_sel_vertical,
+                                    app.editor.selection_start,
+                                    app.editor.caret_byte_offset,
+                                );
                                 ptr_state.resolved = true;
                             }
 
