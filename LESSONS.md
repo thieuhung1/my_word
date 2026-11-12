@@ -1,0 +1,12 @@
+# Lessons Learned (`LESSONS.md`)
+
+File ghi nhớ tự động các bài học và quy tắc rút kinh nghiệm từ lỗi thực tế theo quy chuẩn của skill `code-mistake-lessons`.
+
+## Quy tắc rút ra
+- [x1] Khi cấu hình linker cho Rust trên Windows (target x86_64-pc-windows-gnu) → Thiết lập `linker = "rust-lld"` trong `.cargo/config.toml` thay vì dùng đường dẫn tuyệt đối tới GCC ngoài (tránh xung đột runtime UCRT/MSVCRT gây crash STATUS_ACCESS_VIOLATION 0xc0000005 trong `__gcc_register_frame`) → kiểm tra: `cargo test` chạy thành công không phát sinh mã lỗi 0xc0000005.
+- [x1] Khi viết test cắt lát chuỗi (slice offset) hoặc con trỏ với tiếng Việt trong UTF-8 → Không tính nhẩm byte offset theo số ký tự trực quan (vì các ký tự có dấu như 'à' chiếm 2 bytes, 'ế' chiếm 3 bytes) mà phải tính chính xác qua `char::len_utf8()` hoặc `.find()` → kiểm tra: test slice và selection so sánh đúng chính xác toàn bộ chuỗi có dấu.
+- [x1] Khi xử lý luồng sự kiện bàn phím/bộ gõ (Unikey/EVKey Telex) trong GUI frame → Phải thực thi ngay lập tức tuần tự từng sự kiện (Backspace và Text insertion) theo đúng thứ tự thời gian, tuyệt đối không dồn/đệm vào biến tạm `Option<String>` gây đè mất chuỗi ký tự Unikey gửi trong 1 frame → kiểm tra: test mô phỏng nhịp gửi đa ký tự liên tiếp của Unikey (burst backspaces + chars) ghép đúng từ có dấu như "tiếng", "việt".
+- [x1] Khi tích hợp Windows TSF IME và icon trên `egui`/`eframe 0.28` → Không dùng `ViewportCommand::IMEAllowed(true)` rời rạc (vì `egui-winit` sẽ đặt lại `set_ime_allowed(false)` cuối frame nếu `o.ime` là `None`) mà phải gán `ctx.output_mut(|o| o.ime = Some(IMEOutput { rect, cursor_rect }))`, xử lý `Event::Copy`/`Cut`, và vẽ icon vector thay ký tự Unicode thiếu glyph (`↶`, `⇤`) → kiểm tra: chụp ảnh cửa sổ app qua `read_file` không còn ô vuông `□` nào trên toolbar.
+- [x1] Khi tắt `default_fonts` của `egui`/`eframe` và khởi tạo bằng `FontDefinitions::empty()` để giảm RAM/dung lượng binary → Bắt buộc kiểm tra trực quan toàn bộ ký tự đặc biệt (`•`, `●`, `−`, `+`, `—`) và tiếng Việt có dấu trên ảnh chụp app thực tế bằng `read_file` trước khi hoàn tất, đảm bảo phông hệ thống nạp đủ glyph thay thế → kiểm tra: ảnh chụp `release_verify.png` không có ký tự `□` nào.
+
+
