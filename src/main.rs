@@ -24,6 +24,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| {
             platform::setup_fonts(&cc.egui_ctx);
+            ui::ThemePalette::from_mode(false).apply(&cc.egui_ctx);
             Ok(Box::new(MyWordApp::default()))
         }),
     )

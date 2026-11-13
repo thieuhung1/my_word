@@ -2,7 +2,6 @@ use crate::document::{
     PAGE_BREAK_CHAR, StyleSpan, TextAlignment, deserialize_document, serialize_mwd,
 };
 use crate::editor::EditorState;
-use crate::ui::apply_egui_visuals;
 use eframe::egui::{self, FontFamily};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -224,7 +223,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
     }
 
     ctx.set_fonts(fonts);
-    apply_egui_visuals(ctx, false);
 }
 
 #[cfg(test)]

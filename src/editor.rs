@@ -3,6 +3,7 @@ use crate::document::{
     find_matches, shift_spans_on_delete, shift_spans_on_insert,
 };
 use crate::telex;
+use std::collections::VecDeque;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
@@ -34,7 +35,7 @@ pub struct EditorState {
     pub active_style: TextStyle,
     pub caret_byte_offset: usize,
     pub selection_start: Option<usize>,
-    pub undo_stack: Vec<DocumentSnapshot>,
+    pub undo_stack: VecDeque<DocumentSnapshot>,
     pub redo_stack: Vec<DocumentSnapshot>,
     pub clipboard_buffer: String,
     pub ime_preedit: Option<String>,
@@ -80,7 +81,7 @@ impl Default for EditorState {
             active_style: TextStyle::default(),
             caret_byte_offset: len,
             selection_start: None,
-            undo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             clipboard_buffer: String::new(),
             ime_preedit: None,
@@ -118,7 +119,7 @@ impl EditorState {
             active_style: TextStyle::default(),
             caret_byte_offset: caret,
             selection_start: None,
-            undo_stack: Vec::new(),
+            undo_stack: VecDeque::new(),
             redo_stack: Vec::new(),
             clipboard_buffer: String::new(),
             ime_preedit: None,
@@ -191,7 +192,7 @@ impl EditorState {
     }
 
     fn push_undo_snapshot(&mut self) {
-        if let Some(last) = self.undo_stack.last()
+        if let Some(last) = self.undo_stack.back()
             && last.content == self.content
             && last.spans == self.spans
             && last.para_alignments == self.para_alignments
@@ -199,9 +200,9 @@ impl EditorState {
             return;
         }
         if self.undo_stack.len() >= MAX_UNDO_SNAPSHOTS {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
-        self.undo_stack.push(DocumentSnapshot {
+        self.undo_stack.push_back(DocumentSnapshot {
             content: self.content.clone(),
             caret_byte_offset: self.caret_byte_offset,
             spans: self.spans.clone(),
@@ -234,7 +235,7 @@ impl EditorState {
     }
 
     pub fn undo(&mut self) -> bool {
-        if let Some(prev) = self.undo_stack.pop() {
+        if let Some(prev) = self.undo_stack.pop_back() {
             self.can_coalesce_undo = false;
             let cur = self.take_current_snapshot();
             self.redo_stack.push(cur);
@@ -248,7 +249,7 @@ impl EditorState {
         if let Some(next) = self.redo_stack.pop() {
             self.can_coalesce_undo = false;
             let cur = self.take_current_snapshot();
-            self.undo_stack.push(cur);
+            self.undo_stack.push_back(cur);
             self.restore_snapshot(next);
             return true;
         }

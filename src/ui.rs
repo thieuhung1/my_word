@@ -46,19 +46,19 @@ impl ThemePalette {
             }
         }
     }
-}
 
-pub fn apply_egui_visuals(ctx: &egui::Context, is_dark: bool) {
-    let mut visuals = if is_dark {
-        egui::Visuals::dark()
-    } else {
-        egui::Visuals::light()
-    };
-    visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
-    visuals.widgets.inactive.rounding = Rounding::same(6.0);
-    visuals.widgets.hovered.rounding = Rounding::same(6.0);
-    visuals.widgets.active.rounding = Rounding::same(6.0);
-    ctx.set_visuals(visuals);
+    pub fn apply(&self, ctx: &egui::Context) {
+        let mut visuals = if self.is_dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        visuals.widgets.noninteractive.rounding = Rounding::same(6.0);
+        visuals.widgets.inactive.rounding = Rounding::same(6.0);
+        visuals.widgets.hovered.rounding = Rounding::same(6.0);
+        visuals.widgets.active.rounding = Rounding::same(6.0);
+        ctx.set_visuals(visuals);
+    }
 }
 
 pub fn render_header_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
@@ -166,7 +166,7 @@ pub fn render_header_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                     };
                     if icon_button(ui, theme_icon, theme_tip, false, theme.is_dark).clicked() {
                         app.dark_workspace = !app.dark_workspace;
-                        apply_egui_visuals(ctx, app.dark_workspace);
+                        ThemePalette::from_mode(app.dark_workspace).apply(ctx);
                     }
                     if icon_button(
                         ui,

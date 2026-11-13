@@ -320,7 +320,7 @@ pub fn spans_for_slice(
     if para_len == 0 {
         return Vec::new();
     }
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(spans.len().clamp(1, 8));
     let mut cursor = 0;
     for s in spans {
         if s.end <= para_start || s.start >= para_end {
@@ -364,9 +364,10 @@ pub fn find_matches(content: &str, query: &str, case_sensitive: bool) -> Vec<(us
 
     // Chuẩn hóa từng grapheme cluster của content sang NFC để tìm kiếm,
     // đồng thời lưu lại ánh xạ byte bắt đầu và byte kết thúc trong content gốc.
-    let mut norm_chars: Vec<char> = Vec::new();
-    let mut orig_starts: Vec<usize> = Vec::new();
-    let mut orig_ends: Vec<usize> = Vec::new();
+    let cap = content.len();
+    let mut norm_chars: Vec<char> = Vec::with_capacity(cap);
+    let mut orig_starts: Vec<usize> = Vec::with_capacity(cap);
+    let mut orig_ends: Vec<usize> = Vec::with_capacity(cap);
 
     for (g_start, g_str) in content.grapheme_indices(true) {
         let g_end = g_start + g_str.len();

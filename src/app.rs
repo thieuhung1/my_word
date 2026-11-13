@@ -21,6 +21,11 @@ pub enum ConfirmAction {
     NewDocument,
 }
 
+pub const CARET_BLINK_MS: u64 = 550;
+pub const AUTOSAVE_INTERVAL_SECS: u64 = 20;
+pub const UNIKEY_BURST_WINDOW_MS: u64 = 45;
+const DEFAULT_LINE_HEIGHT_PT: f32 = 22.0;
+
 pub struct MyWordApp {
     pub editor: EditorState,
     pub last_typing_time: Instant,
@@ -70,7 +75,7 @@ impl Default for MyWordApp {
             )),
             pending_pointer_query: None,
             last_caret_pos: None,
-            last_line_height: 22.0,
+            last_line_height: DEFAULT_LINE_HEIGHT_PT,
             pending_keep_selection: false,
             current_file_path: None,
             last_autosave: Instant::now(),
@@ -246,7 +251,7 @@ impl MyWordApp {
     fn maybe_autosave(&mut self) {
         if self.show_recovery_banner
             || !self.editor.is_dirty
-            || self.last_autosave.elapsed().as_secs() < 20
+            || self.last_autosave.elapsed().as_secs() < AUTOSAVE_INTERVAL_SECS
         {
             return;
         }
@@ -371,7 +376,7 @@ impl MyWordApp {
         let is_recent_backspace = saw_backspace_in_frame
             || self
                 .last_external_backspace
-                .is_some_and(|t| t.elapsed() < Duration::from_millis(45));
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(UNIKEY_BURST_WINDOW_MS));
 
         for event in events {
             match event {
@@ -612,7 +617,7 @@ impl eframe::App for MyWordApp {
         );
 
         let elapsed_ms = self.last_typing_time.elapsed().as_millis() as u64;
-        let show_caret = (elapsed_ms / 550).is_multiple_of(2);
+        let show_caret = (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2);
         let ime_output_rect = render_page_canvas(ctx, self, &theme, total_pages, show_caret);
 
         if !ui_wants_kb && let Some((area_rect, cursor_rect)) = ime_output_rect {
@@ -626,7 +631,7 @@ impl eframe::App for MyWordApp {
 
         render_confirm_modal(ctx, self, &theme);
 
-        let next_blink_ms = (550 - (elapsed_ms % 550)).max(16);
+        let next_blink_ms = (CARET_BLINK_MS - (elapsed_ms % CARET_BLINK_MS)).max(16);
         ctx.request_repaint_after(Duration::from_millis(next_blink_ms));
     }
 }
