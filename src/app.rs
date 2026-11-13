@@ -33,6 +33,7 @@ pub struct MyWordApp {
     pub fps: f32,
     pub zoom: f32,
     pub show_margins: bool,
+    pub show_ruler: bool,
     pub dark_workspace: bool,
     pub status_message: Option<(String, Instant)>,
     pub pending_pointer_query: Option<PointerQuery>,
@@ -68,6 +69,7 @@ impl Default for MyWordApp {
             fps: 60.0,
             zoom: 1.0,
             show_margins: true,
+            show_ruler: true,
             dark_workspace: false,
             status_message: Some((
                 "Sẵn sàng soạn thảo tiếng Việt Telex".to_string(),

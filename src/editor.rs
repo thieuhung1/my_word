@@ -27,6 +27,59 @@ pub enum InputMethodMode {
     SystemOnly,
 }
 
+/// Kiểu phong cách văn bản mẫu chuẩn Word / WPS Office
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DocumentPresetStyle {
+    Normal,
+    Heading1,
+    Heading2,
+    Heading3,
+    Quote,
+}
+
+impl DocumentPresetStyle {
+    pub fn label(self) -> &'static str {
+        match self {
+            DocumentPresetStyle::Normal => "Văn bản chính",
+            DocumentPresetStyle::Heading1 => "Tiêu đề 1",
+            DocumentPresetStyle::Heading2 => "Tiêu đề 2",
+            DocumentPresetStyle::Heading3 => "Tiêu đề 3",
+            DocumentPresetStyle::Quote => "Trích dẫn",
+        }
+    }
+
+    pub fn to_text_style(self) -> TextStyle {
+        match self {
+            DocumentPresetStyle::Normal => TextStyle::default(),
+            DocumentPresetStyle::Heading1 => TextStyle {
+                font_size: 22.0,
+                bold: true,
+                color: [30, 41, 59],
+                ..Default::default()
+            },
+            DocumentPresetStyle::Heading2 => TextStyle {
+                font_size: 18.0,
+                bold: true,
+                color: [37, 99, 235],
+                ..Default::default()
+            },
+            DocumentPresetStyle::Heading3 => TextStyle {
+                font_size: 16.0,
+                bold: true,
+                italic: true,
+                color: [51, 65, 85],
+                ..Default::default()
+            },
+            DocumentPresetStyle::Quote => TextStyle {
+                font_size: 14.0,
+                italic: true,
+                color: [100, 116, 139],
+                ..Default::default()
+            },
+        }
+    }
+}
+
 /// Trạng thái cốt lõi của trình soạn thảo (nội dung, định dạng, con trỏ, Undo/Redo)
 pub struct EditorState {
     pub content: String,
@@ -39,6 +92,7 @@ pub struct EditorState {
     pub redo_stack: Vec<DocumentSnapshot>,
     pub clipboard_buffer: String,
     pub ime_preedit: Option<String>,
+    pub format_painter_style: Option<TextStyle>,
     pub unikey_backspace_count: usize,
     pub input_mode: InputMethodMode,
     pub is_dirty: bool,
@@ -85,6 +139,7 @@ impl Default for EditorState {
             redo_stack: Vec::new(),
             clipboard_buffer: String::new(),
             ime_preedit: None,
+            format_painter_style: None,
             unikey_backspace_count: 0,
             input_mode: InputMethodMode::AutoTelex,
             is_dirty: false,
@@ -123,6 +178,7 @@ impl EditorState {
             redo_stack: Vec::new(),
             clipboard_buffer: String::new(),
             ime_preedit: None,
+            format_painter_style: None,
             unikey_backspace_count: 0,
             input_mode: InputMethodMode::AutoTelex,
             is_dirty: false,
@@ -315,6 +371,93 @@ impl EditorState {
             self.is_dirty = true;
         } else {
             f(&mut self.active_style);
+        }
+    }
+
+    pub fn toggle_format_painter(&mut self) {
+        if self.format_painter_style.is_some() {
+            self.format_painter_style = None;
+        } else {
+            let style = if let Some((from, _)) = self.selected_range() {
+                self.spans
+                    .iter()
+                    .find(|s| s.start <= from && from < s.end)
+                    .map(|s| s.style)
+                    .unwrap_or(self.active_style)
+            } else {
+                self.active_style
+            };
+            self.format_painter_style = Some(style);
+        }
+    }
+
+    pub fn apply_format_painter_if_active(&mut self) -> bool {
+        if let Some((from, to)) = self.selected_range()
+            && let Some(style) = self.format_painter_style.take()
+        {
+            self.save_undo();
+            apply_style_on_range(&mut self.spans, self.content.len(), from, to, |s| {
+                *s = style;
+            });
+            self.active_style = style;
+            self.mark_content_changed();
+            return true;
+        }
+        false
+    }
+
+    pub fn clear_formatting(&mut self) {
+        let def_style = TextStyle::default();
+        if let Some((from, to)) = self.selected_range() {
+            self.save_undo();
+            apply_style_on_range(&mut self.spans, self.content.len(), from, to, |s| {
+                *s = def_style;
+            });
+            self.active_style = def_style;
+            self.mark_content_changed();
+        } else {
+            self.active_style = def_style;
+        }
+    }
+
+    pub fn insert_bullet_item(&mut self) {
+        self.insert_text("• ");
+    }
+
+    pub fn insert_numbered_item(&mut self) {
+        let p_idx = self.paragraph_index_at(self.caret_byte_offset);
+        let prefix = format!("{}. ", p_idx + 1);
+        self.insert_text(&prefix);
+    }
+
+    pub fn apply_preset_style(&mut self, preset: DocumentPresetStyle) {
+        let style = preset.to_text_style();
+        if let Some((from, to)) = self.selected_range() {
+            self.save_undo();
+            apply_style_on_range(&mut self.spans, self.content.len(), from, to, |s| {
+                *s = style;
+            });
+            self.active_style = style;
+            self.mark_content_changed();
+        } else {
+            let p_start = self.content[..self.caret_byte_offset]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let p_end = self.content[self.caret_byte_offset..]
+                .find('\n')
+                .map(|i| self.caret_byte_offset + i)
+                .unwrap_or(self.content.len());
+            if p_start < p_end {
+                self.save_undo();
+                apply_style_on_range(&mut self.spans, self.content.len(), p_start, p_end, |s| {
+                    *s = style;
+                });
+                self.active_style = style;
+                self.mark_content_changed();
+            } else {
+                self.active_style = style;
+            }
         }
     }
 
@@ -1054,5 +1197,110 @@ mod tests {
 
         ed.move_word_left_with_selection(false);
         assert_eq!(ed.caret_byte_offset, 0);
+    }
+
+    #[test]
+    fn test_format_painter_copy_and_apply() {
+        let mut ed = EditorState::from_plain_text("Văn bản gốc cần sao chép định dạng.");
+        // Gán style cho "Văn bản"
+        let van_ban_len = "Văn bản".len();
+        ed.selection_start = Some(0);
+        ed.caret_byte_offset = van_ban_len;
+        ed.apply_format(|s| {
+            s.bold = true;
+            s.font_size = 20.0;
+        });
+
+        // Bật format painter tại vùng chọn "Văn bản"
+        ed.toggle_format_painter();
+        assert!(ed.format_painter_style.is_some());
+        let copied = ed.format_painter_style.unwrap();
+        assert!(copied.bold);
+        assert_eq!(copied.font_size, 20.0);
+
+        // Chọn "định dạng" ở cuối câu
+        let target_pos = ed.content.find("định dạng").unwrap();
+        let target_len = "định dạng".len();
+        ed.selection_start = Some(target_pos);
+        ed.caret_byte_offset = target_pos + target_len;
+
+        // Áp dụng chổi sơn
+        let applied = ed.apply_format_painter_if_active();
+        assert!(applied);
+        assert!(ed.format_painter_style.is_none()); // Đã tự tắt sau khi sơn
+
+        // Kiểm tra span tại "định dạng"
+        let span_match = ed
+            .spans
+            .iter()
+            .find(|s| s.start <= target_pos && target_pos < s.end);
+        assert!(span_match.is_some());
+        let s = span_match.unwrap();
+        assert!(s.style.bold);
+        assert_eq!(s.style.font_size, 20.0);
+    }
+
+    #[test]
+    fn test_clear_formatting() {
+        let mut ed = EditorState::from_plain_text("Đoạn văn được định dạng rất nhiều.");
+        ed.selection_start = Some(0);
+        ed.caret_byte_offset = ed.content.len();
+        ed.apply_format(|s| {
+            s.bold = true;
+            s.italic = true;
+            s.font_size = 24.0;
+        });
+
+        // Xóa định dạng toàn bộ
+        ed.clear_formatting();
+        let def = TextStyle::default();
+        assert_eq!(ed.active_style, def);
+        for s in &ed.spans {
+            assert_eq!(s.style, def);
+        }
+    }
+
+    #[test]
+    fn test_document_preset_styles() {
+        let mut ed = EditorState::from_plain_text("Dòng tiêu đề chính\nDòng nội dung bình thường.");
+        // Áp dụng Heading 1 cho dòng đầu tiên
+        let line1_len = "Dòng tiêu đề chính".len();
+        ed.caret_byte_offset = 5; // Nằm ở giữa dòng 1
+        ed.apply_preset_style(DocumentPresetStyle::Heading1);
+
+        let h1_style = DocumentPresetStyle::Heading1.to_text_style();
+        assert_eq!(ed.active_style.font_size, h1_style.font_size);
+        assert!(ed.active_style.bold);
+
+        // Kiểm tra span dòng 1 được áp dụng h1_style
+        let span1 = ed.spans.iter().find(|s| s.start == 0).unwrap();
+        assert_eq!(span1.end, line1_len);
+        assert_eq!(span1.style.font_size, 22.0);
+
+        // Áp dụng Quote cho dòng 2
+        ed.caret_byte_offset = line1_len + 5;
+        ed.apply_preset_style(DocumentPresetStyle::Quote);
+        let q_style = DocumentPresetStyle::Quote.to_text_style();
+        assert!(ed.active_style.italic);
+        assert_eq!(ed.active_style.color, q_style.color);
+
+        // Áp dụng Heading 3
+        ed.apply_preset_style(DocumentPresetStyle::Heading3);
+        assert_eq!(ed.active_style.font_size, 16.0);
+        assert!(ed.active_style.bold);
+    }
+
+    #[test]
+    fn test_bullet_and_numbered_lists() {
+        let mut ed = EditorState::from_plain_text("Đoạn 1\nĐoạn 2");
+        ed.caret_byte_offset = 0;
+        ed.insert_bullet_item();
+        assert!(ed.content.starts_with("• Đoạn 1"));
+
+        // Chuyển tới Đoạn 2 và chèn số thứ tự
+        let d2_pos = ed.content.find("Đoạn 2").unwrap();
+        ed.caret_byte_offset = d2_pos;
+        ed.insert_numbered_item();
+        assert!(ed.content.contains("2. Đoạn 2"));
     }
 }

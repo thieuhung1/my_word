@@ -1,13 +1,13 @@
 use crate::app::MyWordApp;
 use crate::document::{PAGE_BREAK_CHAR, TextAlignment};
-use crate::editor::InputMethodMode;
+use crate::editor::{DocumentPresetStyle, InputMethodMode};
 use crate::icons::{IconKind, draw_app_logo, icon_button};
 use crate::layout::{
     A4_HEIGHT_PT, A4_WIDTH_PT, CachedLayout, PAGE_MARGIN_PT, PointerQuery,
     byte_offset_from_char_index, char_index_from_byte_offset, font_id_for_style,
     paint_range_highlight,
 };
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Rounding, Stroke, Vec2};
+use eframe::egui::{self, Color32, FontId, Pos2, Rect, Rounding, Shape, Stroke, Vec2};
 
 pub struct ThemePalette {
     pub is_dark: bool,
@@ -243,6 +243,23 @@ pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                         app.editor.insert_text(&text);
                     }
                 });
+                let fp_active = app.editor.format_painter_style.is_some();
+                if icon_button(
+                    ui,
+                    IconKind::FormatPainter,
+                    "Sao chép định dạng (Format Painter)",
+                    fp_active,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    app.editor.toggle_format_painter();
+                    if app.editor.format_painter_style.is_some() {
+                        app.set_status("Đã chép định dạng — quét chuột lên chữ để áp dụng");
+                    } else {
+                        app.set_status("Đã hủy sao chép định dạng");
+                    }
+                }
                 ui.separator();
 
                 if ui
@@ -321,6 +338,18 @@ pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                     let next = !app.editor.active_style.strikethrough;
                     app.editor.apply_format(|s| s.strikethrough = next);
                 }
+                if icon_button(
+                    ui,
+                    IconKind::ClearFormatting,
+                    "Xóa toàn bộ định dạng về mặc định",
+                    false,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    app.editor.clear_formatting();
+                    app.set_status("Đã đưa chữ về định dạng mặc định");
+                }
 
                 for (rgb, tip) in [
                     ([30, 41, 59], "Màu mặc định"),
@@ -372,6 +401,29 @@ pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                     }
                 }
                 ui.separator();
+                if icon_button(
+                    ui,
+                    IconKind::ListBullet,
+                    "Danh sách gạch đầu dòng (•)",
+                    false,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    app.editor.insert_bullet_item();
+                }
+                if icon_button(
+                    ui,
+                    IconKind::ListNumber,
+                    "Danh sách đánh số thứ tự (1, 2, 3)",
+                    false,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    app.editor.insert_numbered_item();
+                }
+                ui.separator();
 
                 if icon_button(
                     ui,
@@ -409,6 +461,80 @@ pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                 .clicked()
                 {
                     app.show_margins = !app.show_margins;
+                }
+                if icon_button(
+                    ui,
+                    IconKind::Ruler,
+                    "Bật / Tắt thước kẻ ngang A4",
+                    app.show_ruler,
+                    is_dark,
+                )
+                .clicked()
+                {
+                    app.show_ruler = !app.show_ruler;
+                }
+
+                ui.separator();
+                for preset in [
+                    DocumentPresetStyle::Normal,
+                    DocumentPresetStyle::Heading1,
+                    DocumentPresetStyle::Heading2,
+                    DocumentPresetStyle::Heading3,
+                    DocumentPresetStyle::Quote,
+                ] {
+                    let is_active = match preset {
+                        DocumentPresetStyle::Normal => {
+                            (app.editor.active_style.font_size - 14.0).abs() < 0.5
+                                && !app.editor.active_style.bold
+                        }
+                        DocumentPresetStyle::Heading1 => {
+                            (app.editor.active_style.font_size - 22.0).abs() < 0.5
+                                && app.editor.active_style.bold
+                        }
+                        DocumentPresetStyle::Heading2 => {
+                            (app.editor.active_style.font_size - 18.0).abs() < 0.5
+                                && app.editor.active_style.bold
+                        }
+                        DocumentPresetStyle::Heading3 => {
+                            (app.editor.active_style.font_size - 16.0).abs() < 0.5
+                                && app.editor.active_style.bold
+                        }
+                        DocumentPresetStyle::Quote => app.editor.active_style.italic,
+                    };
+                    let text_color = if is_active {
+                        theme.primary_accent
+                    } else {
+                        theme.text_main
+                    };
+                    let bg_color = if is_active {
+                        if is_dark {
+                            Color32::from_rgb(30, 58, 138)
+                        } else {
+                            Color32::from_rgb(238, 242, 255)
+                        }
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    let btn = egui::Button::new(
+                        egui::RichText::new(preset.label())
+                            .size(11.5)
+                            .color(text_color),
+                    )
+                    .fill(bg_color)
+                    .stroke(if is_active {
+                        Stroke::new(1.0_f32, theme.primary_accent)
+                    } else {
+                        Stroke::NONE
+                    })
+                    .rounding(5.0);
+                    if ui
+                        .add(btn)
+                        .on_hover_text(format!("Áp dụng kiểu {}", preset.label()))
+                        .clicked()
+                    {
+                        app.editor.apply_preset_style(preset);
+                        app.set_status(&format!("Đã áp dụng: {}", preset.label()));
+                    }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -729,7 +855,7 @@ pub fn render_confirm_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
 
 pub fn render_status_bar(
     ctx: &egui::Context,
-    app: &MyWordApp,
+    app: &mut MyWordApp,
     theme: &ThemePalette,
     caret_page_idx: usize,
     total_pages: usize,
@@ -788,19 +914,55 @@ pub fn render_status_bar(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let zoom_pct = format!("{:.0}%", app.zoom * 100.0);
+                    if ui
+                        .button(
+                            egui::RichText::new(zoom_pct)
+                                .size(11.5)
+                                .color(theme.text_main),
+                        )
+                        .on_hover_text("Đặt lại cỡ 100%")
+                        .clicked()
+                    {
+                        app.zoom = 1.0;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("+").size(12.0))
+                                .min_size(Vec2::new(18.0, 18.0)),
+                        )
+                        .on_hover_text("Phóng to")
+                        .clicked()
+                    {
+                        app.zoom = (app.zoom + 0.1).clamp(0.5, 2.0);
+                    }
+                    ui.add_sized(
+                        [85.0, 16.0],
+                        egui::Slider::new(&mut app.zoom, 0.5..=2.0)
+                            .show_value(false)
+                            .trailing_fill(true),
+                    );
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("−").size(12.0))
+                                .min_size(Vec2::new(18.0, 18.0)),
+                        )
+                        .on_hover_text("Thu nhỏ")
+                        .clicked()
+                    {
+                        app.zoom = (app.zoom - 0.1).clamp(0.5, 2.0);
+                    }
+                    ui.separator();
                     ui.label(
-                        egui::RichText::new(format!("{:.0} FPS", app.fps))
+                        egui::RichText::new("A4 (210 × 297 mm)")
                             .size(11.5)
                             .color(theme.text_muted),
                     );
                     ui.separator();
                     ui.label(
-                        egui::RichText::new(format!(
-                            "A4 (210 × 297 mm)  •  {:.0}%",
-                            app.zoom * 100.0
-                        ))
-                        .size(11.5)
-                        .color(theme.text_muted),
+                        egui::RichText::new(format!("{:.0} FPS", app.fps))
+                            .size(11.0)
+                            .color(theme.text_muted),
                     );
                 });
             });
@@ -878,6 +1040,15 @@ pub fn render_page_canvas(
                             }
 
                             let painter = ui.painter();
+                            if page_idx == 0 && app.show_ruler {
+                                paint_ruler(
+                                    painter,
+                                    rect,
+                                    cache,
+                                    theme,
+                                    app.last_caret_pos.map(|p| p.x),
+                                );
+                            }
                             paint_page_chrome(
                                 painter,
                                 rect,
@@ -1179,10 +1350,16 @@ pub fn render_page_canvas(
 
     if let Some(sel) = ptr_state.sel_target {
         app.editor.selection_start = sel;
+        if app.editor.apply_format_painter_if_active() {
+            app.set_status("Đã áp dụng định dạng sao chép");
+        }
     }
     if let Some(c) = ptr_state.caret_target {
         app.editor.caret_byte_offset = c;
         app.last_typing_time = std::time::Instant::now();
+        if ptr_state.sel_target.is_some() && app.editor.apply_format_painter_if_active() {
+            app.set_status("Đã áp dụng định dạng sao chép");
+        }
     }
     if ptr_state.sync_style {
         app.editor.sync_active_style_to_caret();
@@ -1310,5 +1487,120 @@ fn pointer_pos(q: PointerQuery) -> Pos2 {
         | PointerQuery::Drag(pt)
         | PointerQuery::DoubleClick(pt)
         | PointerQuery::MoveVertical(pt) => pt,
+    }
+}
+
+fn paint_ruler(
+    painter: &egui::Painter,
+    page_rect: Rect,
+    cache: &CachedLayout,
+    theme: &ThemePalette,
+    caret_x: Option<f32>,
+) {
+    let zoom = cache.zoom;
+    let margin = PAGE_MARGIN_PT * zoom;
+    let ruler_h = (16.0 * zoom).max(14.0);
+    let ruler_rect = Rect::from_min_max(
+        Pos2::new(page_rect.min.x, page_rect.min.y - ruler_h - 4.0),
+        Pos2::new(page_rect.max.x, page_rect.min.y - 4.0),
+    );
+
+    let bg_usable = if theme.is_dark {
+        Color32::from_rgb(38, 42, 54)
+    } else {
+        Color32::WHITE
+    };
+    let bg_margin = if theme.is_dark {
+        Color32::from_rgb(26, 29, 38)
+    } else {
+        Color32::from_rgb(238, 242, 246)
+    };
+    let tick_color = if theme.is_dark {
+        Color32::from_rgb(100, 116, 139)
+    } else {
+        Color32::from_rgb(148, 163, 184)
+    };
+
+    // 1. Nền vùng lề trái và lề phải
+    painter.rect_filled(ruler_rect, Rounding::same(2.0), bg_margin);
+    // 2. Nền vùng viết khả dụng ở giữa
+    let usable_rect = Rect::from_min_max(
+        Pos2::new(ruler_rect.min.x + margin, ruler_rect.min.y),
+        Pos2::new(ruler_rect.max.x - margin, ruler_rect.max.y),
+    );
+    painter.rect_filled(usable_rect, Rounding::ZERO, bg_usable);
+    painter.rect_stroke(
+        ruler_rect,
+        Rounding::same(2.0),
+        Stroke::new(1.0_f32, theme.border_color),
+    );
+
+    // 3. Vạch chia (mỗi 18 pt = 0.25 inch, mỗi 72 pt = 1 inch)
+    let quarter_inch = 18.0 * zoom;
+    let num_ticks = (cache.usable_width / quarter_inch).floor() as usize;
+
+    for i in 0..=num_ticks {
+        let x = usable_rect.min.x + (i as f32) * quarter_inch;
+        if x > usable_rect.max.x {
+            break;
+        }
+        let is_major = i % 4 == 0;
+        let is_half = i % 2 == 0;
+        let tick_len = if is_major {
+            ruler_h * 0.55
+        } else if is_half {
+            ruler_h * 0.35
+        } else {
+            ruler_h * 0.20
+        };
+
+        painter.line_segment(
+            [
+                Pos2::new(x, ruler_rect.max.y - tick_len),
+                Pos2::new(x, ruler_rect.max.y),
+            ],
+            Stroke::new(1.0_f32, tick_color),
+        );
+
+        if is_major && i > 0 {
+            let inch_num = i / 4;
+            painter.text(
+                Pos2::new(x, ruler_rect.min.y + 1.0),
+                egui::Align2::CENTER_TOP,
+                format!("{}", inch_num),
+                FontId::proportional((8.0 * zoom).max(7.0)),
+                tick_color,
+            );
+        }
+    }
+
+    // 4. Con trượt lề hình tam giác tại vị trí lề trái và phải
+    let mark_l = usable_rect.min.x;
+    let mark_r = usable_rect.max.x;
+    for &mx in &[mark_l, mark_r] {
+        let tri = vec![
+            Pos2::new(mx - 3.5, ruler_rect.max.y),
+            Pos2::new(mx + 3.5, ruler_rect.max.y),
+            Pos2::new(mx, ruler_rect.max.y - 5.0),
+        ];
+        painter.add(Shape::convex_polygon(
+            tri,
+            theme.primary_accent,
+            Stroke::NONE,
+        ));
+    }
+
+    // 5. Vạch chỉ vị trí Caret con trỏ hiện tại chiếu lên thước
+    if let Some(cx) = caret_x
+        && cx >= usable_rect.min.x
+        && cx <= usable_rect.max.x
+    {
+        painter.line_segment(
+            [
+                Pos2::new(cx, ruler_rect.min.y),
+                Pos2::new(cx, ruler_rect.max.y),
+            ],
+            Stroke::new(1.2_f32, theme.primary_accent),
+        );
     }
 }

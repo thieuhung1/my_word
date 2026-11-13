@@ -9,7 +9,14 @@
 - [src/platform.rs](src/platform.rs): Nạp 4 biến thể `Segoe UI` trên `FontDefinitions::default()`, hộp thoại Mở/Lưu Windows bất đồng bộ (PowerShell STA thread không nháy CMD), đọc/ghi `.mwd`/`.txt`/`.md` và Auto-Save `%LOCALAPPDATA%\my_word\autosave.mwd`. Hoàn toàn độc lập với module `ui` (xác minh: 2026-11-13).
 - [src/document.rs](src/document.rs): Mô hình tài liệu Rich Text với `StyleSpan`, căn lề đoạn (`Left`, `Center`, `Right`, `Justify`), `PAGE_BREAK_CHAR` (`\x0c`), tìm kiếm streaming UTF-8 (`find_matches`), và tuần tự hóa `.mwd` (`MYWORD_V1`) không phụ thuộc `serde` (xác minh: 2026-11-13).
 - [src/telex.rs](src/telex.rs): Bộ gõ tiếng Việt Telex tích hợp (`try_apply_telex`) thao tác tại chỗ không `.clone()` dư thừa (xác minh: 2026-11-13).
-- [src/icons.rs](src/icons.rs): Thư viện vẽ biểu tượng vector thuần bằng `egui::Painter` (`icon_button`, `draw_app_logo`), loại bỏ lỗi ô vuông `□` trên Windows.
+- [src/icons.rs](src/icons.rs): Thư viện vẽ biểu tượng vector thuần bằng `egui::Painter` (`icon_button`, `draw_app_logo`), chứa bộ icon chuẩn Word/WPS (`Bold`, `Italic`, `Underline`, `Strikethrough`, `AlignLeft`, `AlignCenter`, `AlignRight`, `AlignJustify`, `Undo`, `Redo`, `Find`, `Replace`, `FormatPainter`, `ClearFormatting`, `ListBullet`, `ListNumber`, `Ruler`), loại bỏ lỗi ô vuông `□` trên Windows.
+- Bộ tính năng nâng cao chuẩn WPS Office / Word (xác minh: 2026-11-13):
+  + **Chổi sao chép định dạng (Format Painter)**: `toggle_format_painter()` và tự động áp dụng `apply_format_painter_if_active()` khi bôi đen vùng chữ mới.
+  + **Xóa định dạng (Clear Formatting)**: `clear_formatting()` đưa vùng chọn hoặc active style về `TextStyle::default()`.
+  + **Danh sách liệt kê (Bullets & Numbering)**: `insert_bullet_item()` (`• `) và `insert_numbered_item()` tự đánh số theo chỉ số đoạn (`1. `, `2. `).
+  + **Bộ sưu tập kiểu mẫu (Style Gallery Chips)**: `DocumentPresetStyle` (`Normal`, `Heading1` 22pt bold, `Heading2` 18pt bold, `Heading3` 16pt bold italic, `Quote` italic slate).
+  + **Thước kẻ ngang A4 (Horizontal Ruler)**: `paint_ruler()` vẽ thước chuẩn lề 72pt (1 inch) trên trang đầu với vùng lề xám bóng mờ, vùng khả dụng trắng, vạch chia 0.25" / 1", con trượt lề tam giác và vạch chỉ vị trí con trỏ Caret thời gian thực.
+  + **Thanh trượt phóng thu (Zoom Slider)**: `[-] ──●── [+] 100%` trên thanh trạng thái với nút reset 100% tiện lợi.
 - Đồ thị phụ thuộc module là DAG chuẩn (Directed Acyclic Graph, không vòng lặp):
   `main` ──► `platform`, `ui`, `app`
   `app`  ──► `editor`, `layout`, `platform`, `ui`, `document`

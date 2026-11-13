@@ -20,6 +20,11 @@ pub enum IconKind {
     Highlight,
     Sun,
     Moon,
+    FormatPainter,
+    ClearFormatting,
+    ListBullet,
+    ListNumber,
+    Ruler,
 }
 
 /// Nút bấm chỉ có biểu tượng vector sắc nét (không phụ thuộc glyph font, không bao giờ lỗi ô vuông □)
@@ -375,6 +380,114 @@ pub fn draw_icon(painter: &egui::Painter, r: Rect, kind: IconKind, color: Color3
                 Pos2::new(cx + w * 0.14, r.min.y + h * 0.10),
             ];
             painter.add(Shape::line(pts, thin));
+        }
+        IconKind::FormatPainter => {
+            let roller = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.15, r.min.y + h * 0.14),
+                Pos2::new(r.max.x - w * 0.25, r.min.y + h * 0.40),
+            );
+            painter.rect_stroke(roller, Rounding::same(2.0), thin);
+            painter.rect_filled(roller.shrink(1.0), Rounding::same(1.0), color);
+            let arm = vec![
+                Pos2::new(r.max.x - w * 0.25, r.min.y + h * 0.27),
+                Pos2::new(r.max.x - w * 0.12, r.min.y + h * 0.27),
+                Pos2::new(r.max.x - w * 0.12, r.min.y + h * 0.58),
+                Pos2::new(cx, r.min.y + h * 0.58),
+                Pos2::new(cx, r.max.y - h * 0.12),
+            ];
+            painter.add(Shape::line(arm, thin));
+        }
+        IconKind::ClearFormatting => {
+            let p1 = Pos2::new(r.min.x + w * 0.15, r.max.y - h * 0.20);
+            let p2 = Pos2::new(r.min.x + w * 0.38, r.min.y + h * 0.15);
+            let p3 = Pos2::new(r.min.x + w * 0.60, r.max.y - h * 0.20);
+            painter.line_segment([p1, p2], s);
+            painter.line_segment([p2, p3], s);
+            painter.line_segment(
+                [
+                    Pos2::new(r.min.x + w * 0.24, r.min.y + h * 0.62),
+                    Pos2::new(r.min.x + w * 0.51, r.min.y + h * 0.62),
+                ],
+                thin,
+            );
+            let cross_c = Pos2::new(r.max.x - w * 0.20, r.max.y - h * 0.24);
+            let cr_d = w * 0.18;
+            painter.line_segment(
+                [
+                    Pos2::new(cross_c.x - cr_d, cross_c.y - cr_d),
+                    Pos2::new(cross_c.x + cr_d, cross_c.y + cr_d),
+                ],
+                Stroke::new(1.8_f32, Color32::from_rgb(239, 68, 68)),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(cross_c.x + cr_d, cross_c.y - cr_d),
+                    Pos2::new(cross_c.x - cr_d, cross_c.y + cr_d),
+                ],
+                Stroke::new(1.8_f32, Color32::from_rgb(239, 68, 68)),
+            );
+        }
+        IconKind::ListBullet => {
+            let ys = [0.22, 0.50, 0.78];
+            for y_f in ys {
+                let y = r.min.y + h * y_f;
+                painter.circle_filled(Pos2::new(r.min.x + w * 0.16, y), 1.8, color);
+                painter.line_segment(
+                    [
+                        Pos2::new(r.min.x + w * 0.38, y),
+                        Pos2::new(r.max.x - w * 0.10, y),
+                    ],
+                    s,
+                );
+            }
+        }
+        IconKind::ListNumber => {
+            let ys = [0.22, 0.50, 0.78];
+            for (idx, y_f) in ys.iter().enumerate() {
+                let y = r.min.y + h * y_f;
+                let num_str = match idx {
+                    0 => "1",
+                    1 => "2",
+                    _ => "3",
+                };
+                painter.text(
+                    Pos2::new(r.min.x + w * 0.16, y),
+                    egui::Align2::CENTER_CENTER,
+                    num_str,
+                    egui::FontId::proportional(9.0),
+                    color,
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(r.min.x + w * 0.38, y),
+                        Pos2::new(r.max.x - w * 0.10, y),
+                    ],
+                    s,
+                );
+            }
+        }
+        IconKind::Ruler => {
+            let box_r = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.08, r.min.y + h * 0.28),
+                Pos2::new(r.max.x - w * 0.08, r.max.y - h * 0.28),
+            );
+            painter.rect_stroke(box_r, Rounding::same(1.5), thin);
+            let ticks = [0.25, 0.40, 0.55, 0.70, 0.85];
+            for (i, t) in ticks.iter().enumerate() {
+                let x = box_r.min.x + box_r.width() * t;
+                let tick_len = if i % 2 == 0 {
+                    box_r.height() * 0.55
+                } else {
+                    box_r.height() * 0.35
+                };
+                painter.line_segment(
+                    [
+                        Pos2::new(x, box_r.min.y),
+                        Pos2::new(x, box_r.min.y + tick_len),
+                    ],
+                    thin,
+                );
+            }
         }
     }
 }
