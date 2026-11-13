@@ -90,7 +90,12 @@ pub fn try_apply_telex(word: &str, key: char) -> Option<String> {
             if c == 'd' || c == 'D' {
                 chars[i] = if c == 'D' { 'Đ' } else { 'đ' };
                 return Some(chars.into_iter().collect());
-            } else if (c == 'đ' || c == 'Đ') && i == chars.len() - 1 {
+            }
+        }
+        // Nếu không có 'd' thường nào trong từ, hoàn tác 'đ'/'Đ' về 'd'/'D' và thêm phím 'd'
+        for i in (0..chars.len()).rev() {
+            let c = chars[i];
+            if c == 'đ' || c == 'Đ' {
                 chars[i] = if c == 'Đ' { 'D' } else { 'd' };
                 chars.push(key);
                 return Some(chars.into_iter().collect());
@@ -131,6 +136,20 @@ pub fn try_apply_telex(word: &str, key: char) -> Option<String> {
 
     // 3. Xử lý 'w' (ă, ơ, ư, ươ)
     if lower_key == 'w' {
+        // Kiểm tra hoàn tác cặp 'ươ' liền kề thành 'uo' + 'w'
+        for i in 0..chars.len().saturating_sub(1) {
+            if let (Some(v1), Some(v2)) = (parse_vowel(chars[i]), parse_vowel(chars[i + 1]))
+                && v1.base == 'ư'
+                && v2.base == 'ơ'
+            {
+                chars[i] = compose_vowel('u', v1.tone, v1.upper)?;
+                chars[i + 1] = compose_vowel('o', v2.tone, v2.upper)?;
+                chars.push(key);
+                return Some(chars.into_iter().collect());
+            }
+        }
+
+        // Biến đổi 'uo' thành 'ươ'
         for i in 0..chars.len().saturating_sub(1) {
             if let (Some(v1), Some(v2)) = (parse_vowel(chars[i]), parse_vowel(chars[i + 1]))
                 && v1.base == 'u'
@@ -328,6 +347,8 @@ mod tests {
     fn test_telex_escape_double_key_english() {
         assert_eq!(type_telex("bosss"), "boss");
         assert_eq!(type_telex("addd"), "add");
+        assert_eq!(type_telex("dadd"), "dad");
+        assert_eq!(type_telex("uoww"), "uow");
         assert_eq!(type_telex("test"), "tét");
         assert_eq!(type_telex("tesst"), "test");
     }

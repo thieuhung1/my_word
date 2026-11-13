@@ -590,6 +590,85 @@ impl EditorState {
         self.sync_active_style_to_caret();
     }
 
+    pub fn move_word_left_with_selection(&mut self, keep_selection: bool) {
+        if keep_selection && self.selection_start.is_none() {
+            self.selection_start = Some(self.caret_byte_offset);
+        } else if !keep_selection {
+            self.selection_start = None;
+        }
+        if self.caret_byte_offset == 0 {
+            return;
+        }
+        let prefix = &self.content[..self.caret_byte_offset];
+        let mut it = prefix.char_indices().rev().peekable();
+        while let Some(&(_, ch)) = it.peek() {
+            if ch.is_whitespace() {
+                it.next();
+            } else {
+                break;
+            }
+        }
+        if let Some(&(_, first_ch)) = it.peek() {
+            let is_alnum = first_ch.is_alphanumeric() || first_ch == '_';
+            let mut target_offset = 0;
+            for (idx, ch) in it {
+                let same_class = if is_alnum {
+                    ch.is_alphanumeric() || ch == '_'
+                } else {
+                    !ch.is_whitespace() && !ch.is_alphanumeric() && ch != '_'
+                };
+                if !same_class {
+                    target_offset = idx + ch.len_utf8();
+                    break;
+                }
+            }
+            self.caret_byte_offset = target_offset;
+        } else {
+            self.caret_byte_offset = 0;
+        }
+        self.sync_active_style_to_caret();
+    }
+
+    pub fn move_word_right_with_selection(&mut self, keep_selection: bool) {
+        if keep_selection && self.selection_start.is_none() {
+            self.selection_start = Some(self.caret_byte_offset);
+        } else if !keep_selection {
+            self.selection_start = None;
+        }
+        if self.caret_byte_offset >= self.content.len() {
+            return;
+        }
+        let start = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        let suffix = &self.content[start..];
+        let mut it = suffix.char_indices().peekable();
+        while let Some(&(_, ch)) = it.peek() {
+            if ch.is_whitespace() {
+                it.next();
+            } else {
+                break;
+            }
+        }
+        if let Some(&(_, first_ch)) = it.peek() {
+            let is_alnum = first_ch.is_alphanumeric() || first_ch == '_';
+            let mut end_offset = suffix.len();
+            for (idx, ch) in it {
+                let same_class = if is_alnum {
+                    ch.is_alphanumeric() || ch == '_'
+                } else {
+                    !ch.is_whitespace() && !ch.is_alphanumeric() && ch != '_'
+                };
+                if !same_class {
+                    end_offset = idx;
+                    break;
+                }
+            }
+            self.caret_byte_offset = start + end_offset;
+        } else {
+            self.caret_byte_offset = self.content.len();
+        }
+        self.sync_active_style_to_caret();
+    }
+
     pub fn select_word_at(&mut self, byte_offset: usize) {
         let clamped = clamp_to_char_boundary(&self.content, byte_offset);
         if self.content.is_empty() {
@@ -618,16 +697,42 @@ impl EditorState {
             self.sync_active_style_to_caret();
             return;
         }
+
+        let is_alnum = self.content[clamped..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+
+        if is_alnum {
+            let start = self.content[..clamped]
+                .char_indices()
+                .rev()
+                .take_while(|&(_, c)| c.is_alphanumeric() || c == '_')
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(clamped);
+            let rel_end = self.content[clamped..]
+                .char_indices()
+                .take_while(|&(_, c)| c.is_alphanumeric() || c == '_')
+                .last()
+                .map(|(i, c)| i + c.len_utf8())
+                .unwrap_or(0);
+            self.selection_start = Some(start);
+            self.caret_byte_offset = clamped + rel_end;
+            self.sync_active_style_to_caret();
+            return;
+        }
+
         let start = self.content[..clamped]
             .char_indices()
             .rev()
-            .take_while(|&(_, c)| !c.is_whitespace())
+            .take_while(|&(_, c)| !c.is_whitespace() && !c.is_alphanumeric() && c != '_')
             .last()
             .map(|(i, _)| i)
             .unwrap_or(clamped);
         let rel_end = self.content[clamped..]
             .char_indices()
-            .take_while(|&(_, c)| !c.is_whitespace())
+            .take_while(|&(_, c)| !c.is_whitespace() && !c.is_alphanumeric() && c != '_')
             .last()
             .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
@@ -650,6 +755,9 @@ impl EditorState {
         let idx = active_idx.min(matches.len() - 1);
         let (from, to) = matches[idx];
         self.save_undo();
+        if let Some(s) = self.spans.iter().find(|s| from >= s.start && from < s.end) {
+            self.active_style = s.style;
+        }
         self.selection_start = Some(from);
         self.caret_byte_offset = to;
         self.insert_text(replacement);
@@ -916,5 +1024,34 @@ mod tests {
         assert_eq!(ed.copy_selection(), Some(" ".to_string()));
         ed.delete_forward();
         assert_eq!(ed.content, "CộngXã hội");
+    }
+
+    #[test]
+    fn test_double_click_punctuation_separation_and_word_nav() {
+        let mut ed = EditorState::from_plain_text("Xin chào, bạn!");
+        // Double-click vào chữ "chào" không được dính dấu phẩy
+        let chao_pos = ed.content.find("chào").unwrap();
+        ed.select_word_at(chao_pos);
+        assert_eq!(ed.copy_selection(), Some("chào".to_string()));
+
+        // Double-click vào dấu phẩy ',' chỉ chọn riêng dấu phẩy
+        let comma_pos = ed.content.find(',').unwrap();
+        ed.select_word_at(comma_pos);
+        assert_eq!(ed.copy_selection(), Some(",".to_string()));
+
+        // Di chuyển bằng Ctrl+Arrow (move_word_left/right)
+        ed.caret_byte_offset = 0;
+        ed.move_word_right_with_selection(false);
+        assert_eq!(ed.caret_byte_offset, "Xin".len());
+        ed.move_word_right_with_selection(true);
+        assert_eq!(ed.selection_start, Some("Xin".len()));
+        assert_eq!(ed.copy_selection(), Some(" chào".to_string()));
+
+        ed.move_word_left_with_selection(false);
+        assert_eq!(ed.selection_start, None);
+        assert_eq!(ed.caret_byte_offset, "Xin ".len());
+
+        ed.move_word_left_with_selection(false);
+        assert_eq!(ed.caret_byte_offset, 0);
     }
 }

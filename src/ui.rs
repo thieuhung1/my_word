@@ -461,18 +461,39 @@ pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: 
                 if find_resp.changed() {
                     app.editor.find_dirty = true;
                 }
+                if (find_resp.lost_focus() || find_resp.has_focus())
+                    && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                    && !app.cached_matches.is_empty()
+                {
+                    app.active_match_idx = (app.active_match_idx + 1) % app.cached_matches.len();
+                    let (s, e) = app.cached_matches[app.active_match_idx];
+                    app.editor.selection_start = Some(s);
+                    app.editor.caret_byte_offset = e;
+                    app.scroll_to_caret = true;
+                }
                 if app.focus_find_input {
                     find_resp.request_focus();
                     app.focus_find_input = false;
                 }
 
-                let mut case_btn =
-                    egui::Button::new(egui::RichText::new("Aa").size(12.0)).rounding(5.0);
-                if app.find_case_sensitive {
-                    case_btn = case_btn
-                        .fill(Color32::from_rgb(238, 242, 255))
-                        .stroke(Stroke::new(1.0_f32, theme.primary_accent));
-                }
+                let case_btn = if app.find_case_sensitive {
+                    let fill_col = if theme.is_dark {
+                        Color32::from_rgb(45, 55, 75)
+                    } else {
+                        Color32::from_rgb(238, 242, 255)
+                    };
+                    let text_col = if theme.is_dark {
+                        Color32::from_rgb(165, 180, 252)
+                    } else {
+                        theme.primary_accent
+                    };
+                    egui::Button::new(egui::RichText::new("Aa").size(12.0).color(text_col))
+                        .rounding(5.0)
+                        .fill(fill_col)
+                        .stroke(Stroke::new(1.0_f32, theme.primary_accent))
+                } else {
+                    egui::Button::new(egui::RichText::new("Aa").size(12.0)).rounding(5.0)
+                };
                 if ui
                     .add(case_btn)
                     .on_hover_text("Phân biệt hoa / thường")
@@ -562,6 +583,148 @@ pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: 
                 });
             });
         });
+}
+
+pub fn render_recovery_banner(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
+    if !app.show_recovery_banner {
+        return;
+    }
+    egui::TopBottomPanel::top("recovery_banner")
+        .frame(
+            egui::Frame::none()
+                .fill(if theme.is_dark {
+                    Color32::from_rgb(55, 40, 10)
+                } else {
+                    Color32::from_rgb(254, 243, 199)
+                })
+                .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    if theme.is_dark {
+                        Color32::from_rgb(180, 130, 30)
+                    } else {
+                        Color32::from_rgb(245, 158, 11)
+                    },
+                )),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "⚠️ Phát hiện bản sao lưu tự động chưa được lưu từ phiên làm việc trước.",
+                    )
+                    .size(13.0)
+                    .color(if theme.is_dark {
+                        Color32::from_rgb(253, 230, 138)
+                    } else {
+                        Color32::from_rgb(146, 64, 14)
+                    })
+                    .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Bỏ qua").clicked() {
+                        app.discard_autosave();
+                    }
+                    if ui
+                        .button(egui::RichText::new("Khôi phục").strong())
+                        .clicked()
+                    {
+                        app.recover_autosave();
+                    }
+                });
+            });
+        });
+}
+
+pub fn render_confirm_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
+    let Some(action) = app.pending_confirm else {
+        return;
+    };
+
+    let mut close_modal = false;
+    let mut do_save = false;
+    let mut do_discard = false;
+
+    egui::Window::new("Xác nhận lưu tài liệu")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(
+            egui::Frame::window(&ctx.style())
+                .fill(theme.surface_bg)
+                .stroke(Stroke::new(1.0_f32, theme.border_color))
+                .inner_margin(egui::Margin::same(16.0)),
+        )
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("Tài liệu hiện tại có thay đổi chưa được lưu.")
+                        .size(14.5)
+                        .strong()
+                        .color(theme.text_main),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Bạn có muốn lưu các thay đổi trước khi tiếp tục không?")
+                        .size(13.0)
+                        .color(theme.text_muted),
+                );
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Hủy").clicked() {
+                            close_modal = true;
+                        }
+                        if ui.button("Không lưu").clicked() {
+                            do_discard = true;
+                        }
+                        if ui
+                            .button(egui::RichText::new("Lưu").color(Color32::WHITE).strong())
+                            .clicked()
+                        {
+                            do_save = true;
+                        }
+                    });
+                });
+            });
+        });
+
+    if close_modal {
+        app.pending_confirm = None;
+    } else if do_discard {
+        app.pending_confirm = None;
+        app.editor.is_dirty = false;
+        match action {
+            crate::app::ConfirmAction::Quit => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            crate::app::ConfirmAction::OpenNew => {
+                app.trigger_open_dialog(ctx.clone());
+            }
+            crate::app::ConfirmAction::NewDocument => {
+                app.new_document();
+            }
+        }
+    } else if do_save {
+        app.pending_confirm = None;
+        if let Some(path) = app.current_file_path.clone() {
+            app.write_to_path(&path);
+            match action {
+                crate::app::ConfirmAction::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                crate::app::ConfirmAction::OpenNew => {
+                    app.trigger_open_dialog(ctx.clone());
+                }
+                crate::app::ConfirmAction::NewDocument => {
+                    app.new_document();
+                }
+            }
+        } else {
+            app.post_save_action = Some(action);
+            app.file_dialog_rx = Some(crate::platform::spawn_save_dialog(ctx.clone()));
+        }
+    }
 }
 
 pub fn render_status_bar(
@@ -694,17 +857,22 @@ pub fn render_page_canvas(
                                         Some(PointerQuery::DoubleClick(pos));
                                     ctx.memory_mut(|m| m.request_focus(response.id));
                                 }
-                            } else if response.clicked()
-                                || (primary_just_pressed && response.hovered())
-                            {
-                                if let Some(pos) = response.interact_pointer_pos().or(press_origin)
+                            } else if primary_just_pressed && response.hovered() {
+                                if let Some(pos) =
+                                    press_origin.or_else(|| response.interact_pointer_pos())
                                 {
+                                    app.pending_pointer_query = Some(PointerQuery::Click(pos));
+                                    ctx.memory_mut(|m| m.request_focus(response.id));
+                                }
+                            } else if response.clicked() {
+                                if let Some(pos) = response.interact_pointer_pos() {
                                     app.pending_pointer_query = Some(PointerQuery::Click(pos));
                                     ctx.memory_mut(|m| m.request_focus(response.id));
                                 }
                             } else if response.dragged()
                                 && let Some(pos) = response.interact_pointer_pos()
-                                && press_origin.is_some_and(|orig| orig.distance(pos) > 3.0)
+                                && let Some(orig) = press_origin
+                                && orig.distance(pos) > 3.0
                             {
                                 app.pending_pointer_query = Some(PointerQuery::Drag(pos));
                             }
@@ -725,6 +893,19 @@ pub fn render_page_canvas(
                             for placed in placed_list {
                                 let p = &cache.paras[placed.para_data_idx];
                                 let p_text = &app.editor.content[p.start..p.end];
+                                let (placed_b_start, placed_b_end) =
+                                    placed.byte_range(p, &app.editor.content);
+
+                                let (row_min_y, row_max_y, chunk_h) = if !p.galley.rows.is_empty()
+                                    && placed.row_start < placed.row_end
+                                {
+                                    let min_y = p.galley.rows[placed.row_start].rect.min.y;
+                                    let max_y = p.galley.rows[placed.row_end - 1].rect.max.y;
+                                    (min_y, max_y, (max_y - min_y).max(base_line_height))
+                                } else {
+                                    (0.0, p.height, p.height)
+                                };
+
                                 let cursor_y = content_origin.y + placed.y_in_page;
                                 let draw_x = match p.alignment {
                                     TextAlignment::Left | TextAlignment::Justify => {
@@ -735,17 +916,23 @@ pub fn render_page_canvas(
                                     }
                                     TextAlignment::Right => content_origin.x + cache.usable_width,
                                 };
-                                let draw_origin = Pos2::new(draw_x, cursor_y);
+                                let draw_origin = Pos2::new(draw_x, cursor_y - row_min_y);
+                                let clip_rect = Rect::from_min_max(
+                                    Pos2::new(rect.min.x, cursor_y - 1.0),
+                                    Pos2::new(rect.max.x, cursor_y + chunk_h + 1.0),
+                                );
+                                let page_painter = painter.with_clip_rect(clip_rect);
 
                                 if let Some(q) = pointer_query {
                                     let target_pos = pointer_pos(q);
                                     if !ptr_state.resolved
                                         && target_pos.y >= cursor_y
-                                        && target_pos.y < cursor_y + p.height + p.gap
+                                        && target_pos.y < cursor_y + chunk_h + p.gap
                                     {
                                         let rel = Vec2::new(
                                             target_pos.x - draw_x,
-                                            (target_pos.y - cursor_y).clamp(0.0, p.height),
+                                            (target_pos.y - cursor_y + row_min_y)
+                                                .clamp(row_min_y, row_max_y),
                                         );
                                         let cursor = p.galley.cursor_from_pos(rel);
                                         let target_byte = p.start
@@ -776,13 +963,15 @@ pub fn render_page_canvas(
                                                 Color32::from_rgba_unmultiplied(253, 224, 71, 150)
                                             };
                                             paint_range_highlight(
-                                                painter,
+                                                &page_painter,
                                                 &p.galley,
                                                 p_text,
                                                 lf,
                                                 lt,
                                                 draw_origin,
                                                 fill,
+                                                placed.row_start,
+                                                placed.row_end,
                                             );
                                         }
                                     }
@@ -795,20 +984,26 @@ pub fn render_page_canvas(
                                     let lf = sf.saturating_sub(p.start).min(p_text.len());
                                     let lt = (st - p.start).min(p_text.len());
                                     paint_range_highlight(
-                                        painter,
+                                        &page_painter,
                                         &p.galley,
                                         p_text,
                                         lf,
                                         lt,
                                         draw_origin,
                                         Color32::from_rgba_unmultiplied(191, 219, 254, 185),
+                                        placed.row_start,
+                                        placed.row_end,
                                     );
                                 }
 
-                                painter.galley(draw_origin, p.galley.clone(), doc_text_color);
+                                page_painter.galley(draw_origin, p.galley.clone(), doc_text_color);
 
-                                if p.followed_by_page_break && app.show_margins {
-                                    let pb_y = cursor_y + p.height + 2.0 * zoom;
+                                if p.followed_by_page_break
+                                    && (p.galley.rows.is_empty()
+                                        || placed.row_end >= p.galley.rows.len())
+                                    && app.show_margins
+                                {
+                                    let pb_y = cursor_y + chunk_h + 2.0 * zoom;
                                     painter.line_segment(
                                         [
                                             Pos2::new(content_origin.x, pb_y),
@@ -828,8 +1023,8 @@ pub fn render_page_canvas(
                                     );
                                 }
 
-                                if app.editor.caret_byte_offset >= p.start
-                                    && app.editor.caret_byte_offset <= p.end
+                                if app.editor.caret_byte_offset >= placed_b_start
+                                    && app.editor.caret_byte_offset <= placed_b_end
                                 {
                                     let c_idx = char_index_from_byte_offset(
                                         p_text,
@@ -839,10 +1034,21 @@ pub fn render_page_canvas(
                                         &p.galley.from_ccursor(egui::text::CCursor::new(c_idx)),
                                     );
                                     let caret_x = draw_x + local_rect.min.x;
-                                    let caret_y = cursor_y + local_rect.min.y;
+                                    let caret_y = cursor_y - row_min_y + local_rect.min.y;
                                     let c_h = local_rect.height().max(base_line_height * 0.85);
 
                                     ptr_state.next_caret_pos = Some(Pos2::new(caret_x, caret_y));
+
+                                    if app.scroll_to_caret {
+                                        ui.scroll_to_rect(
+                                            Rect::from_min_size(
+                                                Pos2::new(caret_x, caret_y),
+                                                Vec2::new(2.0, c_h),
+                                            ),
+                                            None,
+                                        );
+                                        app.scroll_to_caret = false;
+                                    }
                                     // Nếu có preedit, IME candidate window hiện sau preedit
                                     let ime_cursor_x =
                                         if let Some(preedit) = &app.editor.ime_preedit {

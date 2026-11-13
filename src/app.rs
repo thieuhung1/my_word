@@ -2,17 +2,24 @@ use crate::document::{PAGE_BREAK_CHAR, find_matches};
 use crate::editor::EditorState;
 use crate::layout::{CachedLayout, PointerQuery, caret_page_index, ensure_layout_cache};
 use crate::platform::{
-    FileDialogResult, load_document, spawn_open_dialog, spawn_save_dialog, write_autosave,
-    write_document,
+    FileDialogResult, clear_autosave, has_autosave, load_document, read_autosave,
+    spawn_open_dialog, spawn_save_dialog, write_autosave, write_document,
 };
 use crate::ui::{
-    ThemePalette, render_find_replace_bar, render_header_bar, render_page_canvas,
-    render_ribbon_bar, render_status_bar,
+    ThemePalette, render_confirm_modal, render_find_replace_bar, render_header_bar,
+    render_page_canvas, render_recovery_banner, render_ribbon_bar, render_status_bar,
 };
 use eframe::egui::{self, Pos2};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ConfirmAction {
+    Quit,
+    OpenNew,
+    NewDocument,
+}
 
 pub struct MyWordApp {
     pub editor: EditorState,
@@ -39,10 +46,16 @@ pub struct MyWordApp {
     pub focus_find_input: bool,
     pub cached_layout: Option<CachedLayout>,
     pub cached_matches: Vec<(usize, usize)>,
+    pub pending_confirm: Option<ConfirmAction>,
+    pub post_save_action: Option<ConfirmAction>,
+    pub show_recovery_banner: bool,
+    pub last_external_backspace: Option<Instant>,
+    pub scroll_to_caret: bool,
 }
 
 impl Default for MyWordApp {
     fn default() -> Self {
+        let has_saved = has_autosave();
         Self {
             editor: EditorState::default(),
             start_time: Instant::now(),
@@ -71,6 +84,11 @@ impl Default for MyWordApp {
             focus_find_input: false,
             cached_layout: None,
             cached_matches: Vec::new(),
+            pending_confirm: None,
+            post_save_action: None,
+            show_recovery_banner: has_saved,
+            last_external_backspace: None,
+            scroll_to_caret: false,
         }
     }
 }
@@ -111,12 +129,69 @@ impl MyWordApp {
             };
             self.editor.find_dirty = false;
         }
-        if !self.cached_matches.is_empty() && self.active_match_idx >= self.cached_matches.len() {
+        if self.cached_matches.is_empty() || self.active_match_idx >= self.cached_matches.len() {
             self.active_match_idx = 0;
         }
     }
 
+    pub fn recover_autosave(&mut self) {
+        match read_autosave() {
+            Ok((text, spans, aligns)) => {
+                self.editor.save_undo();
+                self.editor.content = text;
+                self.editor.spans = spans;
+                self.editor.para_alignments = aligns;
+                self.editor.caret_byte_offset = 0;
+                self.editor.selection_start = None;
+                self.editor.mark_content_changed();
+                self.editor.is_dirty = true;
+                self.editor.sync_active_style_to_caret();
+                self.cached_layout = None;
+                self.show_recovery_banner = false;
+                self.set_status("Đã khôi phục phiên soạn thảo chưa lưu");
+            }
+            Err(e) => {
+                self.show_recovery_banner = false;
+                self.set_status(&format!("Không đọc được bản sao lưu: {}", e));
+            }
+        }
+    }
+
+    pub fn discard_autosave(&mut self) {
+        clear_autosave();
+        self.show_recovery_banner = false;
+        self.set_status("Đã bỏ qua bản sao lưu");
+    }
+
+    pub fn new_document(&mut self) {
+        self.editor.save_undo();
+        self.editor.content.clear();
+        self.editor.spans.clear();
+        self.editor.para_alignments.clear();
+        self.editor.caret_byte_offset = 0;
+        self.editor.selection_start = None;
+        self.current_file_path = None;
+        self.editor.is_dirty = false;
+        self.editor.mark_content_changed();
+        self.cached_layout = None;
+        self.editor.ime_preedit = None;
+        self.active_match_idx = 0;
+        self.set_status("Tài liệu mới");
+    }
+
+    pub fn trigger_new_document(&mut self) {
+        if self.editor.is_dirty {
+            self.pending_confirm = Some(ConfirmAction::NewDocument);
+        } else {
+            self.new_document();
+        }
+    }
+
     pub fn trigger_open_dialog(&mut self, ctx: egui::Context) {
+        if self.editor.is_dirty {
+            self.pending_confirm = Some(ConfirmAction::OpenNew);
+            return;
+        }
         if self.file_dialog_rx.is_none() {
             self.file_dialog_rx = Some(spawn_open_dialog(ctx));
         }
@@ -132,11 +207,12 @@ impl MyWordApp {
         }
     }
 
-    fn write_to_path(&mut self, path: &Path) {
+    pub fn write_to_path(&mut self, path: &Path) {
         match write_document(path, &self.editor) {
             Ok(()) => {
                 self.current_file_path = Some(path.to_path_buf());
                 self.editor.is_dirty = false;
+                clear_autosave();
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tệp");
                 self.set_status(&format!("Đã lưu: {}", name));
             }
@@ -157,6 +233,9 @@ impl MyWordApp {
                 self.editor.mark_content_changed();
                 self.editor.is_dirty = false;
                 self.editor.sync_active_style_to_caret();
+                self.cached_layout = None;
+                self.editor.ime_preedit = None;
+                self.active_match_idx = 0;
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tệp");
                 self.set_status(&format!("Đã mở: {}", name));
             }
@@ -165,30 +244,134 @@ impl MyWordApp {
     }
 
     fn maybe_autosave(&mut self) {
-        if !self.editor.is_dirty || self.last_autosave.elapsed().as_secs() < 20 {
+        if self.show_recovery_banner
+            || !self.editor.is_dirty
+            || self.last_autosave.elapsed().as_secs() < 20
+        {
             return;
         }
         self.last_autosave = Instant::now();
         write_autosave(&self.editor);
     }
 
-    fn poll_file_dialog(&mut self) {
-        if let Some(rx) = &self.file_dialog_rx
-            && let Ok(maybe_res) = rx.try_recv()
-        {
-            self.file_dialog_rx = None;
-            if let Some(res) = maybe_res {
-                match res {
-                    FileDialogResult::Open(p) => self.load_from_path(&p),
-                    FileDialogResult::Save(p) => self.write_to_path(&p),
+    fn poll_file_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.file_dialog_rx {
+            match rx.try_recv() {
+                Ok(maybe_res) => {
+                    self.file_dialog_rx = None;
+                    if let Some(res) = maybe_res {
+                        match res {
+                            FileDialogResult::Open(p) => self.load_from_path(&p),
+                            FileDialogResult::Save(p) => {
+                                self.write_to_path(&p);
+                                if let Some(action) = self.post_save_action.take() {
+                                    match action {
+                                        ConfirmAction::Quit => {
+                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                        }
+                                        ConfirmAction::OpenNew => {
+                                            self.trigger_open_dialog(ctx.clone());
+                                        }
+                                        ConfirmAction::NewDocument => {
+                                            self.new_document();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.post_save_action = None;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.file_dialog_rx = None;
+                    self.post_save_action = None;
                 }
             }
         }
     }
 
+    pub fn move_to_line_boundary(&mut self, to_end: bool, keep_selection: bool) {
+        if keep_selection && self.editor.selection_start.is_none() {
+            self.editor.selection_start = Some(self.editor.caret_byte_offset);
+        } else if !keep_selection {
+            self.editor.selection_start = None;
+        }
+
+        let target_byte = if let Some(cache) = &self.cached_layout {
+            let (b_start, b_end) =
+                cache.line_boundary_at(&self.editor.content, self.editor.caret_byte_offset);
+            if to_end { b_end } else { b_start }
+        } else if to_end {
+            self.editor.content.len()
+        } else {
+            0
+        };
+
+        self.editor.caret_byte_offset = target_byte;
+        self.editor.sync_active_style_to_caret();
+        self.scroll_to_caret = true;
+    }
+
+    pub fn move_caret_vertical(&mut self, is_up: bool, keep_selection: bool) {
+        if keep_selection && self.editor.selection_start.is_none() {
+            self.editor.selection_start = Some(self.editor.caret_byte_offset);
+        } else if !keep_selection {
+            self.editor.selection_start = None;
+        }
+
+        if let Some(cache) = &self.cached_layout
+            && let Some(target) = cache.navigate_vertical_line(
+                &self.editor.content,
+                self.editor.caret_byte_offset,
+                is_up,
+            )
+        {
+            self.editor.caret_byte_offset = target;
+            self.editor.sync_active_style_to_caret();
+            self.scroll_to_caret = true;
+            return;
+        }
+
+        if let Some(pos) = self.last_caret_pos {
+            self.pending_keep_selection = keep_selection;
+            let offset_y = if is_up {
+                -self.last_line_height * 0.75
+            } else {
+                self.last_line_height * 1.25
+            };
+            self.pending_pointer_query = Some(PointerQuery::MoveVertical(Pos2::new(
+                pos.x,
+                pos.y + offset_y,
+            )));
+            self.scroll_to_caret = true;
+        }
+    }
+
     fn process_events(&mut self, ctx: &egui::Context, ui_wants_kb: bool) {
         let events = ctx.input(|i| i.events.clone());
+
         let mut saw_backspace_in_frame = false;
+        for ev in &events {
+            if let egui::Event::Key {
+                key: egui::Key::Backspace,
+                pressed: true,
+                modifiers,
+                ..
+            } = ev
+                && !modifiers.command
+            {
+                saw_backspace_in_frame = true;
+                self.last_external_backspace = Some(Instant::now());
+                break;
+            }
+        }
+
+        let is_recent_backspace = saw_backspace_in_frame
+            || self
+                .last_external_backspace
+                .is_some_and(|t| t.elapsed() < Duration::from_millis(45));
 
         for event in events {
             match event {
@@ -223,6 +406,15 @@ impl MyWordApp {
                     continue;
                 }
                 egui::Event::Key {
+                    key: egui::Key::N,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => {
+                    self.trigger_new_document();
+                    continue;
+                }
+                egui::Event::Key {
                     key: egui::Key::S,
                     pressed: true,
                     modifiers,
@@ -249,14 +441,19 @@ impl MyWordApp {
 
             match event {
                 egui::Event::Text(t) => {
-                    self.editor.handle_text_input(&t, !saw_backspace_in_frame);
+                    self.editor.handle_text_input(&t, !is_recent_backspace);
+                    self.scroll_to_caret = true;
                 }
                 egui::Event::Copy => self.copy_selection_to_clipboard(ctx),
-                egui::Event::Cut => self.cut_selection_to_clipboard(ctx),
+                egui::Event::Cut => {
+                    self.cut_selection_to_clipboard(ctx);
+                    self.scroll_to_caret = true;
+                }
                 egui::Event::Paste(pasted) => {
                     let clean = pasted.replace("\r\n", "\n").replace('\r', "\n");
                     self.editor.clipboard_buffer = clean.clone();
                     self.editor.insert_text(&clean);
+                    self.scroll_to_caret = true;
                 }
                 egui::Event::Key {
                     key,
@@ -264,18 +461,19 @@ impl MyWordApp {
                     modifiers,
                     ..
                 } => {
-                    if key == egui::Key::Backspace && !modifiers.command {
-                        saw_backspace_in_frame = true;
+                    if self.editor.ime_preedit.is_none() {
+                        self.handle_key_event(key, modifiers);
                     }
-                    self.handle_key_event(key, modifiers);
                 }
                 egui::Event::Ime(ime_event) => match ime_event {
                     egui::ImeEvent::Preedit(text) => {
                         self.editor.ime_preedit = if text.is_empty() { None } else { Some(text) };
+                        self.scroll_to_caret = true;
                     }
                     egui::ImeEvent::Commit(text) => {
                         self.editor.ime_preedit = None;
                         self.editor.insert_text(&text);
+                        self.scroll_to_caret = true;
                     }
                     _ => {}
                 },
@@ -285,6 +483,7 @@ impl MyWordApp {
     }
 
     fn handle_key_event(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        self.scroll_to_caret = true;
         if modifiers.command {
             match key {
                 egui::Key::Z => {
@@ -328,6 +527,18 @@ impl MyWordApp {
                 }
                 egui::Key::Backspace => self.editor.delete_word_backward(),
                 egui::Key::Delete => self.editor.delete_word_forward(),
+                egui::Key::ArrowLeft => {
+                    self.editor.move_word_left_with_selection(modifiers.shift);
+                }
+                egui::Key::ArrowRight => {
+                    self.editor.move_word_right_with_selection(modifiers.shift);
+                }
+                egui::Key::Home => {
+                    self.editor.move_to_doc_boundary(false, modifiers.shift);
+                }
+                egui::Key::End => {
+                    self.editor.move_to_doc_boundary(true, modifiers.shift);
+                }
                 _ => {}
             }
         } else {
@@ -336,26 +547,10 @@ impl MyWordApp {
                 egui::Key::Delete => self.editor.delete_forward(),
                 egui::Key::ArrowLeft => self.editor.move_left_with_selection(modifiers.shift),
                 egui::Key::ArrowRight => self.editor.move_right_with_selection(modifiers.shift),
-                egui::Key::ArrowUp => {
-                    if let Some(pos) = self.last_caret_pos {
-                        self.pending_keep_selection = modifiers.shift;
-                        self.pending_pointer_query = Some(PointerQuery::MoveVertical(Pos2::new(
-                            pos.x,
-                            pos.y - self.last_line_height * 0.75,
-                        )));
-                    }
-                }
-                egui::Key::ArrowDown => {
-                    if let Some(pos) = self.last_caret_pos {
-                        self.pending_keep_selection = modifiers.shift;
-                        self.pending_pointer_query = Some(PointerQuery::MoveVertical(Pos2::new(
-                            pos.x,
-                            pos.y + self.last_line_height * 1.25,
-                        )));
-                    }
-                }
-                egui::Key::Home => self.editor.move_to_doc_boundary(false, modifiers.shift),
-                egui::Key::End => self.editor.move_to_doc_boundary(true, modifiers.shift),
+                egui::Key::ArrowUp => self.move_caret_vertical(true, modifiers.shift),
+                egui::Key::ArrowDown => self.move_caret_vertical(false, modifiers.shift),
+                egui::Key::Home => self.move_to_line_boundary(false, modifiers.shift),
+                egui::Key::End => self.move_to_line_boundary(true, modifiers.shift),
                 egui::Key::Enter => self.editor.insert_text("\n"),
                 _ => {}
             }
@@ -365,6 +560,11 @@ impl MyWordApp {
 
 impl eframe::App for MyWordApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.editor.is_dirty {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_confirm = Some(ConfirmAction::Quit);
+        }
+
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame_time).as_secs_f32();
         self.last_frame_time = now;
@@ -372,7 +572,7 @@ impl eframe::App for MyWordApp {
             self.fps = self.fps * 0.9 + (1.0 / dt) * 0.1;
         }
         self.maybe_autosave();
-        self.poll_file_dialog();
+        self.poll_file_dialog(ctx);
 
         let ui_wants_kb = ctx.wants_keyboard_input();
         self.process_events(ctx, ui_wants_kb);
@@ -380,6 +580,7 @@ impl eframe::App for MyWordApp {
         let theme = ThemePalette::from_mode(self.dark_workspace);
         render_header_bar(ctx, self, &theme);
         render_ribbon_bar(ctx, self, &theme);
+        render_recovery_banner(ctx, self, &theme);
         render_find_replace_bar(ctx, self, &theme);
 
         let (total_pages, caret_page_idx, word_count, char_count) = {
@@ -387,7 +588,7 @@ impl eframe::App for MyWordApp {
                 ensure_layout_cache(&mut self.cached_layout, &mut self.editor, self.zoom, ctx);
             (
                 cache.pages.len().max(1),
-                caret_page_index(cache, self.editor.caret_byte_offset),
+                caret_page_index(cache, &self.editor.content, self.editor.caret_byte_offset),
                 cache.word_count,
                 cache.char_count,
             )
@@ -416,7 +617,33 @@ impl eframe::App for MyWordApp {
             });
         }
 
+        render_confirm_modal(ctx, self, &theme);
+
         let next_blink_ms = (550 - (elapsed_ms % 550)).max(16);
         ctx.request_repaint_after(Duration::from_millis(next_blink_ms));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dirty_confirmation_and_new_document() {
+        let mut app = MyWordApp::default();
+        app.editor.is_dirty = true;
+        app.trigger_new_document();
+        assert_eq!(app.pending_confirm, Some(ConfirmAction::NewDocument));
+
+        let ctx = egui::Context::default();
+        app.trigger_open_dialog(ctx);
+        assert_eq!(app.pending_confirm, Some(ConfirmAction::OpenNew));
+
+        app.editor.is_dirty = false;
+        app.pending_confirm = None;
+        app.editor.content = "Nội dung cũ".to_string();
+        app.trigger_new_document();
+        assert_eq!(app.pending_confirm, None);
+        assert!(app.editor.content.is_empty());
     }
 }

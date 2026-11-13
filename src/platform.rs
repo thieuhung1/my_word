@@ -12,8 +12,8 @@ pub enum FileDialogResult {
     Save(PathBuf),
 }
 
-const OPEN_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'My Word / Text (*.mwd;*.txt;*.md)|*.mwd;*.txt;*.md|All files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $d.FileName }"#;
-const SAVE_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = 'My Word Rich Text (*.mwd)|*.mwd|Plain Text (*.txt)|*.txt|Markdown (*.md)|*.md'; $d.FileName = 'tai_lieu.mwd'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Write-Output $d.FileName }"#;
+const OPEN_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'My Word / Text (*.mwd;*.txt;*.md)|*.mwd;*.txt;*.md|All files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
+const SAVE_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = 'My Word Rich Text (*.mwd)|*.mwd|Plain Text (*.txt)|*.txt|Markdown (*.md)|*.md'; $d.FileName = 'tai_lieu.mwd'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
 
 fn spawn_powershell_dialog<F>(
     ctx: egui::Context,
@@ -25,14 +25,25 @@ where
 {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let chosen = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Sta", "-Command", script])
-            .output()
-            .ok()
-            .and_then(|o| {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                (!s.is_empty()).then(|| map(PathBuf::from(s)))
-            });
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Sta",
+            "-Command",
+            script,
+        ]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let chosen = cmd.output().ok().and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            (!s.is_empty()).then(|| map(PathBuf::from(s)))
+        });
         let _ = tx.send(chosen);
         ctx.request_repaint();
     });
@@ -79,19 +90,58 @@ pub fn load_document(
     Ok(deserialize_document(&raw, path))
 }
 
-pub fn write_autosave(editor: &EditorState) {
-    if let Some(local_app) = std::env::var_os("LOCALAPPDATA") {
-        let dir = PathBuf::from(local_app).join("my_word");
-        if std::fs::create_dir_all(&dir).is_ok() {
-            let payload = serialize_mwd(&editor.content, &editor.spans, &editor.para_alignments);
-            let _ = std::fs::write(dir.join("autosave.mwd"), payload.as_bytes());
-        }
+pub fn autosave_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|local_app| {
+        PathBuf::from(local_app)
+            .join("my_word")
+            .join("autosave.mwd")
+    })
+}
+
+pub fn has_autosave() -> bool {
+    if let Some(path) = autosave_path() {
+        path.is_file()
+            && std::fs::metadata(&path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false)
+    } else {
+        false
     }
 }
 
-/// Nạp duy nhất phông hệ thống Windows (bỏ bộ font mặc định của egui để tiết kiệm RAM)
+pub fn read_autosave() -> Result<(String, Vec<StyleSpan>, Vec<TextAlignment>), std::io::Error> {
+    if let Some(path) = autosave_path() {
+        load_document(&path)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "Thư mục LOCALAPPDATA không tồn tại",
+        ))
+    }
+}
+
+pub fn clear_autosave() {
+    if let Some(path) = autosave_path()
+        && path.is_file()
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub fn write_autosave(editor: &EditorState) {
+    if let Some(path) = autosave_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let payload = serialize_mwd(&editor.content, &editor.spans, &editor.para_alignments);
+        let _ = std::fs::write(path, payload.as_bytes());
+    }
+}
+
+/// Nạp phông hệ thống Windows làm ưu tiên hàng đầu, đồng thời giữ bộ phông mặc định của egui
+/// ở cuối danh sách fallback để đảm bảo không bị thiếu ký tự/glyph lạ.
 pub fn setup_fonts(ctx: &egui::Context) {
-    let mut fonts = egui::FontDefinitions::empty();
+    let mut fonts = egui::FontDefinitions::default();
 
     let load_font = |fonts: &mut egui::FontDefinitions, name: &str, paths: &[&str]| -> bool {
         for path in paths {
@@ -116,10 +166,14 @@ pub fn setup_fonts(ctx: &egui::Context) {
     ) {
         fonts
             .families
-            .insert(FontFamily::Proportional, vec!["sys_regular".to_owned()]);
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "sys_regular".to_owned());
         fonts
             .families
-            .insert(FontFamily::Monospace, vec!["sys_regular".to_owned()]);
+            .entry(FontFamily::Monospace)
+            .or_default()
+            .insert(0, "sys_regular".to_owned());
     }
 
     if load_font(
@@ -130,10 +184,12 @@ pub fn setup_fonts(ctx: &egui::Context) {
             "C:\\Windows\\Fonts\\arialbd.ttf",
         ],
     ) {
-        fonts.families.insert(
-            FontFamily::Name("Bold".into()),
-            vec!["sys_bold".to_owned(), "sys_regular".to_owned()],
-        );
+        let list = fonts
+            .families
+            .entry(FontFamily::Name("Bold".into()))
+            .or_default();
+        list.insert(0, "sys_regular".to_owned());
+        list.insert(0, "sys_bold".to_owned());
     }
     if load_font(
         &mut fonts,
@@ -143,10 +199,12 @@ pub fn setup_fonts(ctx: &egui::Context) {
             "C:\\Windows\\Fonts\\ariali.ttf",
         ],
     ) {
-        fonts.families.insert(
-            FontFamily::Name("Italic".into()),
-            vec!["sys_italic".to_owned(), "sys_regular".to_owned()],
-        );
+        let list = fonts
+            .families
+            .entry(FontFamily::Name("Italic".into()))
+            .or_default();
+        list.insert(0, "sys_regular".to_owned());
+        list.insert(0, "sys_italic".to_owned());
     }
     if load_font(
         &mut fonts,
@@ -156,16 +214,37 @@ pub fn setup_fonts(ctx: &egui::Context) {
             "C:\\Windows\\Fonts\\arialbi.ttf",
         ],
     ) {
-        fonts.families.insert(
-            FontFamily::Name("BoldItalic".into()),
-            vec![
-                "sys_bold_italic".to_owned(),
-                "sys_bold".to_owned(),
-                "sys_regular".to_owned(),
-            ],
-        );
+        let list = fonts
+            .families
+            .entry(FontFamily::Name("BoldItalic".into()))
+            .or_default();
+        list.insert(0, "sys_regular".to_owned());
+        list.insert(0, "sys_bold".to_owned());
+        list.insert(0, "sys_bold_italic".to_owned());
     }
 
     ctx.set_fonts(fonts);
     apply_egui_visuals(ctx, false);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_autosave_lifecycle_write_read_clear() {
+        let ed = EditorState::from_plain_text("Văn bản kiểm thử lưu tự động");
+        write_autosave(&ed);
+        assert!(has_autosave());
+
+        let res = read_autosave();
+        assert!(res.is_ok());
+        let (content, spans, aligns) = res.unwrap();
+        assert_eq!(content, "Văn bản kiểm thử lưu tự động");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(aligns.len(), 1);
+
+        clear_autosave();
+        assert!(!has_autosave());
+    }
 }

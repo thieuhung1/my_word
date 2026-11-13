@@ -25,11 +25,44 @@ pub struct ParaRenderData {
     pub galley: Arc<egui::Galley>,
     pub height: f32,
     pub gap: f32,
+    pub row_char_offsets: Vec<usize>,
 }
 
+#[derive(Clone, Copy)]
 pub struct PlacedPara {
     pub para_data_idx: usize,
     pub y_in_page: f32,
+    pub row_start: usize,
+    pub row_end: usize,
+}
+
+impl PlacedPara {
+    pub fn byte_range(&self, p: &ParaRenderData, content: &str) -> (usize, usize) {
+        let p_text = &content[p.start..p.end];
+        let total_chars = p_text.chars().count();
+        let c_start = if self.row_start < p.row_char_offsets.len() {
+            p.row_char_offsets[self.row_start]
+        } else {
+            0
+        };
+        let c_end = if self.row_end < p.row_char_offsets.len() {
+            p.row_char_offsets[self.row_end]
+        } else {
+            total_chars
+        };
+        let b_start = p.start + byte_offset_from_char_index(p_text, c_start);
+        let b_end = p.start + byte_offset_from_char_index(p_text, c_end);
+        (b_start, b_end)
+    }
+}
+
+#[allow(dead_code)]
+pub struct VisualLineInfo {
+    pub page_idx: usize,
+    pub para_idx: usize,
+    pub row_idx: usize,
+    pub byte_start: usize,
+    pub byte_end: usize,
 }
 
 /// Bộ đệm bố cục & thống kê: chỉ tính lại khi nội dung, định dạng hoặc zoom thay đổi
@@ -41,6 +74,103 @@ pub struct CachedLayout {
     pub pages: Vec<Vec<PlacedPara>>,
     pub word_count: usize,
     pub char_count: usize,
+}
+
+impl CachedLayout {
+    pub fn visual_lines(&self, content: &str) -> Vec<VisualLineInfo> {
+        let mut lines = Vec::new();
+        for (page_idx, placed_list) in self.pages.iter().enumerate() {
+            for pl in placed_list {
+                let p = &self.paras[pl.para_data_idx];
+                let p_text = &content[p.start..p.end];
+                let total_chars = p_text.chars().count();
+
+                if p.galley.rows.is_empty() || pl.row_start >= pl.row_end {
+                    lines.push(VisualLineInfo {
+                        page_idx,
+                        para_idx: pl.para_data_idx,
+                        row_idx: 0,
+                        byte_start: p.start,
+                        byte_end: p.end,
+                    });
+                } else {
+                    for r_idx in pl.row_start..pl.row_end {
+                        let c_start = p.row_char_offsets[r_idx];
+                        let c_end = if r_idx + 1 < p.row_char_offsets.len() {
+                            p.row_char_offsets[r_idx + 1]
+                        } else {
+                            total_chars
+                        };
+                        let b_start = p.start + byte_offset_from_char_index(p_text, c_start);
+                        let b_end = p.start + byte_offset_from_char_index(p_text, c_end);
+                        lines.push(VisualLineInfo {
+                            page_idx,
+                            para_idx: pl.para_data_idx,
+                            row_idx: r_idx,
+                            byte_start: b_start,
+                            byte_end: b_end,
+                        });
+                    }
+                }
+            }
+        }
+        lines
+    }
+
+    pub fn line_boundary_at(&self, content: &str, caret_byte_offset: usize) -> (usize, usize) {
+        let lines = self.visual_lines(content);
+        for l in &lines {
+            if caret_byte_offset >= l.byte_start && caret_byte_offset <= l.byte_end {
+                return (l.byte_start, l.byte_end);
+            }
+        }
+        if let Some(last) = lines.last() {
+            (last.byte_start, last.byte_end)
+        } else {
+            (0, content.len())
+        }
+    }
+
+    pub fn navigate_vertical_line(
+        &self,
+        content: &str,
+        caret_byte_offset: usize,
+        is_up: bool,
+    ) -> Option<usize> {
+        let lines = self.visual_lines(content);
+        if lines.is_empty() {
+            return None;
+        }
+
+        let mut curr_idx = 0;
+        for (i, l) in lines.iter().enumerate() {
+            if caret_byte_offset >= l.byte_start && caret_byte_offset <= l.byte_end {
+                curr_idx = i;
+                break;
+            }
+        }
+
+        let target_idx = if is_up {
+            if curr_idx == 0 {
+                return Some(0);
+            }
+            curr_idx - 1
+        } else {
+            if curr_idx + 1 >= lines.len() {
+                return Some(content.len());
+            }
+            curr_idx + 1
+        };
+
+        let curr_line = &lines[curr_idx];
+        let target_line = &lines[target_idx];
+        let rel_in_curr = caret_byte_offset.saturating_sub(curr_line.byte_start);
+        let target_len = target_line.byte_end - target_line.byte_start;
+        let rel_clamped = rel_in_curr.min(target_len);
+        let target_byte = target_line.byte_start + rel_clamped;
+
+        Some(crate::editor::clamp_to_char_boundary(content, target_byte))
+    }
 }
 
 pub fn font_id_for_style(style: &TextStyle, zoom: f32) -> FontId {
@@ -63,6 +193,7 @@ pub fn char_index_from_byte_offset(line: &str, byte_offset: usize) -> usize {
     line[..byte_offset.min(line.len())].chars().count()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn paint_range_highlight(
     painter: &egui::Painter,
     galley: &egui::Galley,
@@ -71,6 +202,8 @@ pub fn paint_range_highlight(
     local_to: usize,
     draw_origin: Pos2,
     fill: Color32,
+    row_start: usize,
+    row_end: usize,
 ) {
     if local_from >= local_to {
         return;
@@ -82,10 +215,14 @@ pub fn paint_range_highlight(
     }
 
     let mut row_char_offset = 0;
-    for row in &galley.rows {
+    for (row_idx, row) in galley.rows.iter().enumerate() {
         let row_len = row.glyphs.len();
         let row_end_c = row_char_offset + row_len;
-        if start_c < row_end_c && end_c > row_char_offset {
+        if row_idx >= row_start
+            && row_idx < row_end
+            && start_c < row_end_c
+            && end_c > row_char_offset
+        {
             let s_idx = start_c.saturating_sub(row_char_offset);
             let e_idx = (end_c - row_char_offset).min(row_len);
             let x1 = if s_idx < row.glyphs.len() {
@@ -230,6 +367,13 @@ fn build_layout_cache(editor: &EditorState, zoom: f32, ctx: &egui::Context) -> C
                 3.0 * zoom
             };
 
+            let mut row_char_offsets = Vec::with_capacity(galley.rows.len());
+            let mut c_off = 0;
+            for row in &galley.rows {
+                row_char_offsets.push(c_off);
+                c_off += row.glyphs.len() + usize::from(row.ends_with_newline);
+            }
+
             paras.push(ParaRenderData {
                 start: scan_start,
                 end: i,
@@ -238,6 +382,7 @@ fn build_layout_cache(editor: &EditorState, zoom: f32, ctx: &egui::Context) -> C
                 galley,
                 height,
                 gap,
+                row_char_offsets,
             });
 
             if let Some(c) = sep_char {
@@ -253,17 +398,80 @@ fn build_layout_cache(editor: &EditorState, zoom: f32, ctx: &egui::Context) -> C
     let mut pages: Vec<Vec<PlacedPara>> = vec![Vec::new()];
     let mut y_used = 0.0_f32;
     for (p_data_idx, p) in paras.iter().enumerate() {
-        if y_used > 0.0 && y_used + p.height > usable_height {
-            pages.push(Vec::new());
-            y_used = 0.0;
+        let total_rows = p.galley.rows.len();
+        if total_rows == 0 {
+            if y_used > 0.0 && y_used + p.height > usable_height {
+                pages.push(Vec::new());
+                y_used = 0.0;
+            }
+            if let Some(page) = pages.last_mut() {
+                page.push(PlacedPara {
+                    para_data_idx: p_data_idx,
+                    y_in_page: y_used,
+                    row_start: 0,
+                    row_end: 0,
+                });
+            }
+            y_used += p.height + p.gap;
+        } else {
+            let mut curr_row_start = 0;
+            while curr_row_start < total_rows {
+                let start_row_min_y = p.galley.rows[curr_row_start].rect.min.y;
+                let mut r = curr_row_start;
+                while r < total_rows {
+                    let chunk_h = p.galley.rows[r].rect.max.y - start_row_min_y;
+                    if y_used + chunk_h > usable_height {
+                        if r == curr_row_start {
+                            if y_used > 0.0 {
+                                pages.push(Vec::new());
+                                y_used = 0.0;
+                                break;
+                            } else {
+                                if let Some(page) = pages.last_mut() {
+                                    page.push(PlacedPara {
+                                        para_data_idx: p_data_idx,
+                                        y_in_page: 0.0,
+                                        row_start: curr_row_start,
+                                        row_end: curr_row_start + 1,
+                                    });
+                                }
+                                pages.push(Vec::new());
+                                y_used = 0.0;
+                                curr_row_start += 1;
+                                break;
+                            }
+                        } else {
+                            if let Some(page) = pages.last_mut() {
+                                page.push(PlacedPara {
+                                    para_data_idx: p_data_idx,
+                                    y_in_page: y_used,
+                                    row_start: curr_row_start,
+                                    row_end: r,
+                                });
+                            }
+                            pages.push(Vec::new());
+                            y_used = 0.0;
+                            curr_row_start = r;
+                            break;
+                        }
+                    }
+                    r += 1;
+                }
+                if r == total_rows && curr_row_start < total_rows {
+                    let chunk_h = p.galley.rows[total_rows - 1].rect.max.y - start_row_min_y;
+                    if let Some(page) = pages.last_mut() {
+                        page.push(PlacedPara {
+                            para_data_idx: p_data_idx,
+                            y_in_page: y_used,
+                            row_start: curr_row_start,
+                            row_end: total_rows,
+                        });
+                    }
+                    y_used += chunk_h + p.gap;
+                    curr_row_start = total_rows;
+                }
+            }
         }
-        if let Some(page) = pages.last_mut() {
-            page.push(PlacedPara {
-                para_data_idx: p_data_idx,
-                y_in_page: y_used,
-            });
-        }
-        y_used += p.height + p.gap;
         if p.followed_by_page_break {
             pages.push(Vec::new());
             y_used = 0.0;
@@ -281,14 +489,64 @@ fn build_layout_cache(editor: &EditorState, zoom: f32, ctx: &egui::Context) -> C
     }
 }
 
-pub fn caret_page_index(cache: &CachedLayout, caret_byte_offset: usize) -> usize {
+pub fn caret_page_index(cache: &CachedLayout, content: &str, caret_byte_offset: usize) -> usize {
     for (pi, placed_list) in cache.pages.iter().enumerate() {
         if placed_list.iter().any(|pl| {
             let p = &cache.paras[pl.para_data_idx];
-            caret_byte_offset >= p.start && caret_byte_offset <= p.end
+            if caret_byte_offset < p.start || caret_byte_offset > p.end {
+                return false;
+            }
+            if p.galley.rows.is_empty() || pl.row_start >= pl.row_end {
+                return true;
+            }
+            let (b_start, b_end) = pl.byte_range(p, content);
+            caret_byte_offset >= b_start && caret_byte_offset <= b_end
         }) {
             return pi;
         }
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_long_paragraph_pagination_splits_across_pages() {
+        let ctx = egui::Context::default();
+        crate::platform::setup_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |ctx| {
+            let long_text = "Dòng văn bản rất dài không có ngắt dòng Enter để thử nghiệm cơ chế chia trang theo từng dòng galley rows. ".repeat(60);
+            let ed = EditorState::from_plain_text(&long_text);
+            let cache = build_layout_cache(&ed, 1.0, ctx);
+
+            // Đoạn văn dài phải được ngắt thành nhiều hơn 1 trang A4
+            assert!(
+                cache.pages.len() >= 2,
+                "Đoạn văn dài phải tự ngắt sang ít nhất 2 trang, thực tế: {}",
+                cache.pages.len()
+            );
+
+            // Kiểm tra phân chia row_start..row_end không bị chồng lấn
+            let p0 = &cache.pages[0][0];
+            let p1 = &cache.pages[1][0];
+            assert_eq!(p0.para_data_idx, p1.para_data_idx);
+            assert_eq!(p0.row_start, 0);
+            assert!(p0.row_end > 0);
+            assert_eq!(p1.row_start, p0.row_end);
+
+            // Kiểm tra điều hướng dòng trực quan
+            let lines = cache.visual_lines(&long_text);
+            assert!(!lines.is_empty());
+            let (b_start, b_end) = cache.line_boundary_at(&long_text, 0);
+            assert_eq!(b_start, 0);
+            assert!(b_end > 0);
+
+            // Điều hướng xuống dòng kế tiếp
+            let next_caret = cache.navigate_vertical_line(&long_text, 0, false);
+            assert!(next_caret.is_some());
+            assert!(next_caret.unwrap() > 0);
+        });
+    }
 }
