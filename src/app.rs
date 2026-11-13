@@ -188,7 +188,7 @@ impl MyWordApp {
     }
 
     pub fn new_document(&mut self) {
-        self.editor = EditorState::from_plain_text("");
+        self.editor = EditorState::new_empty();
         self.current_file_path = None;
         self.cached_layout = None;
         self.cached_matches.clear();

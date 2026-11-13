@@ -63,3 +63,4 @@ Tối giản **KHÔNG** đồng nghĩa với cẩu thả. Các nguyên tắc an 
 Mỗi khi hoàn thành một task theo chuẩn Ponytail, tóm tắt ngắn gọn 1-2 dòng:
 - **Đã làm**: Giải pháp ngắn gọn nhất được chọn.
 - **Đã lược bỏ (What was skipped)**: Những abstraction, crate hoặc cơ chế phức tạp đã được chủ động từ chối để giữ app nhẹ và sạch.
+

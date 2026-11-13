@@ -1,6 +1,6 @@
 use crate::document::{
     DocumentSnapshot, PAGE_BREAK_CHAR, StyleSpan, TextAlignment, TextStyle, apply_style_on_range,
-    find_matches, shift_spans_on_delete, shift_spans_on_insert,
+    find_matches, shift_spans_on_delete, shift_spans_on_insert, style_at_offset,
 };
 use crate::telex;
 use std::collections::VecDeque;
@@ -25,6 +25,14 @@ pub fn clamp_to_char_boundary(s: &str, offset: usize) -> usize {
 pub enum InputMethodMode {
     AutoTelex,
     SystemOnly,
+}
+
+/// Phân nhóm thao tác để gộp Undo thông minh (không gộp lẫn lộn gõ chữ và xóa chữ)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UndoGroup {
+    None,
+    Insert,
+    Delete,
 }
 
 /// Kiểu phong cách văn bản mẫu chuẩn Word / WPS Office
@@ -99,7 +107,7 @@ pub struct EditorState {
     pub layout_dirty: bool,
     pub find_dirty: bool,
     last_typing_undo: Instant,
-    can_coalesce_undo: bool,
+    undo_group: UndoGroup,
 }
 
 impl Default for EditorState {
@@ -146,13 +154,38 @@ impl Default for EditorState {
             layout_dirty: true,
             find_dirty: true,
             last_typing_undo: Instant::now(),
-            can_coalesce_undo: false,
+            undo_group: UndoGroup::None,
         }
     }
 }
 
 impl EditorState {
-    /// Tạo tài liệu từ văn bản thuần túy
+    /// Tạo tài liệu trống hoàn toàn (dùng khi bấm Ctrl+N / Tạo tài liệu mới)
+    pub fn new_empty() -> Self {
+        Self {
+            content: String::new(),
+            spans: Vec::new(),
+            para_alignments: vec![TextAlignment::Left],
+            active_style: TextStyle::default(),
+            caret_byte_offset: 0,
+            selection_start: None,
+            undo_stack: VecDeque::new(),
+            redo_stack: Vec::new(),
+            clipboard_buffer: String::new(),
+            ime_preedit: None,
+            format_painter_style: None,
+            unikey_backspace_count: 0,
+            input_mode: InputMethodMode::AutoTelex,
+            is_dirty: false,
+            layout_dirty: true,
+            find_dirty: true,
+            last_typing_undo: Instant::now(),
+            undo_group: UndoGroup::None,
+        }
+    }
+
+    /// Tạo tài liệu thử nghiệm sạch cho unit tests
+    #[cfg(test)]
     pub fn from_plain_text(text: &str) -> Self {
         let normalized: String = text.nfc().collect();
         let caret = normalized.len();
@@ -184,7 +217,7 @@ impl EditorState {
             layout_dirty: true,
             find_dirty: true,
             last_typing_undo: Instant::now(),
-            can_coalesce_undo: false,
+            undo_group: UndoGroup::None,
         }
     }
 
@@ -212,24 +245,39 @@ impl EditorState {
             .count()
     }
 
+    /// Tìm phạm vi byte `(start, end)` của đoạn văn chứa `byte_offset`
+    pub fn paragraph_byte_range_at(&self, byte_offset: usize) -> (usize, usize) {
+        let clamped = clamp_to_char_boundary(&self.content, byte_offset);
+        let start = self.content[..clamped]
+            .rfind(['\n', PAGE_BREAK_CHAR])
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let end = self.content[clamped..]
+            .find(['\n', PAGE_BREAK_CHAR])
+            .map(|i| clamped + i)
+            .unwrap_or(self.content.len());
+        (start, end)
+    }
+
     pub fn sync_active_style_to_caret(&mut self) {
         if self.content.is_empty() {
             return;
         }
-        self.active_style = crate::document::style_at_offset(&self.spans, self.caret_byte_offset);
+        self.active_style = style_at_offset(&self.spans, self.caret_byte_offset);
     }
 
     /// Lưu ảnh chụp Undo (tối đa 50 bản để tiết kiệm RAM)
     pub fn save_undo(&mut self) {
-        self.can_coalesce_undo = false;
+        self.undo_group = UndoGroup::None;
         self.push_undo_snapshot();
     }
 
-    /// Gộp các phím gõ liên tục trong 800ms vào cùng 1 bước Undo
-    fn save_undo_typing(&mut self, break_group: bool) {
+    /// Gộp các phím gõ hoặc xóa cùng loại liên tục trong 800ms vào cùng 1 bước Undo
+    fn save_undo_grouped(&mut self, group: UndoGroup, break_group: bool) {
         let now = Instant::now();
         if !break_group
-            && self.can_coalesce_undo
+            && group != UndoGroup::None
+            && self.undo_group == group
             && now.duration_since(self.last_typing_undo).as_millis() < UNDO_COALESCE_MS
         {
             self.last_typing_undo = now;
@@ -237,7 +285,7 @@ impl EditorState {
         }
         self.push_undo_snapshot();
         self.last_typing_undo = now;
-        self.can_coalesce_undo = !break_group;
+        self.undo_group = if break_group { UndoGroup::None } else { group };
     }
 
     fn push_undo_snapshot(&mut self) {
@@ -285,7 +333,7 @@ impl EditorState {
 
     pub fn undo(&mut self) -> bool {
         if let Some(prev) = self.undo_stack.pop_back() {
-            self.can_coalesce_undo = false;
+            self.undo_group = UndoGroup::None;
             let cur = self.take_current_snapshot();
             self.redo_stack.push(cur);
             self.restore_snapshot(prev);
@@ -296,7 +344,7 @@ impl EditorState {
 
     pub fn redo(&mut self) -> bool {
         if let Some(next) = self.redo_stack.pop() {
-            self.can_coalesce_undo = false;
+            self.undo_group = UndoGroup::None;
             let cur = self.take_current_snapshot();
             self.undo_stack.push_back(cur);
             self.restore_snapshot(next);
@@ -313,6 +361,9 @@ impl EditorState {
     }
 
     fn remove_range_and_sync(&mut self, from: usize, to: usize) {
+        if from >= to || to > self.content.len() {
+            return;
+        }
         let removed_breaks = self.content[from..to]
             .chars()
             .filter(|&c| c == '\n' || c == PAGE_BREAK_CHAR)
@@ -328,6 +379,33 @@ impl EditorState {
                 self.para_alignments.drain(first_para + 1..end_rm);
             }
         }
+        self.sync_para_alignments();
+        self.mark_content_changed();
+    }
+
+    fn insert_normalized_at(&mut self, pos: usize, normalized: &str, style: TextStyle) {
+        if normalized.is_empty() {
+            return;
+        }
+        let new_breaks = normalized
+            .chars()
+            .filter(|&c| c == '\n' || c == PAGE_BREAK_CHAR)
+            .count();
+        if new_breaks > 0 {
+            let cur_p = self.paragraph_index_at(pos);
+            let cur_align = self
+                .para_alignments
+                .get(cur_p)
+                .copied()
+                .unwrap_or(TextAlignment::Left);
+            for offset in 1..=new_breaks {
+                let insert_at = (cur_p + offset).min(self.para_alignments.len());
+                self.para_alignments.insert(insert_at, cur_align);
+            }
+        }
+
+        self.content.insert_str(pos, normalized);
+        shift_spans_on_insert(&mut self.spans, pos, normalized.len(), style);
         self.sync_para_alignments();
         self.mark_content_changed();
     }
@@ -372,11 +450,7 @@ impl EditorState {
             self.format_painter_style = None;
         } else {
             let style = if let Some((from, _)) = self.selected_range() {
-                self.spans
-                    .iter()
-                    .find(|s| s.start <= from && from < s.end)
-                    .map(|s| s.style)
-                    .unwrap_or(self.active_style)
+                style_at_offset(&self.spans, from + 1)
             } else {
                 self.active_style
             };
@@ -414,13 +488,32 @@ impl EditorState {
     }
 
     pub fn insert_bullet_item(&mut self) {
-        self.insert_text("• ");
+        let (p_start, _) = self.paragraph_byte_range_at(self.caret_byte_offset);
+        self.save_undo();
+        let style = style_at_offset(&self.spans, p_start + 1);
+        let prefix = "• ";
+        self.insert_normalized_at(p_start, prefix, style);
+        self.caret_byte_offset += prefix.len();
+        if let Some(sel) = &mut self.selection_start
+            && *sel >= p_start
+        {
+            *sel += prefix.len();
+        }
     }
 
     pub fn insert_numbered_item(&mut self) {
         let p_idx = self.paragraph_index_at(self.caret_byte_offset);
+        let (p_start, _) = self.paragraph_byte_range_at(self.caret_byte_offset);
         let prefix = format!("{}. ", p_idx + 1);
-        self.insert_text(&prefix);
+        self.save_undo();
+        let style = style_at_offset(&self.spans, p_start + 1);
+        self.insert_normalized_at(p_start, &prefix, style);
+        self.caret_byte_offset += prefix.len();
+        if let Some(sel) = &mut self.selection_start
+            && *sel >= p_start
+        {
+            *sel += prefix.len();
+        }
     }
 
     pub fn apply_preset_style(&mut self, preset: DocumentPresetStyle) {
@@ -433,14 +526,7 @@ impl EditorState {
             self.active_style = style;
             self.mark_content_changed();
         } else {
-            let p_start = self.content[..self.caret_byte_offset]
-                .rfind('\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            let p_end = self.content[self.caret_byte_offset..]
-                .find('\n')
-                .map(|i| self.caret_byte_offset + i)
-                .unwrap_or(self.content.len());
+            let (p_start, p_end) = self.paragraph_byte_range_at(self.caret_byte_offset);
             if p_start < p_end {
                 self.save_undo();
                 apply_style_on_range(&mut self.spans, self.content.len(), p_start, p_end, |s| {
@@ -488,35 +574,16 @@ impl EditorState {
             || clean_text
                 .chars()
                 .any(|c| c.is_whitespace() || c == PAGE_BREAK_CHAR);
-        self.save_undo_typing(break_group);
+
+        self.save_undo_grouped(UndoGroup::Insert, break_group);
         self.delete_selection();
 
         let normalized: String = clean_text.nfc().collect();
         let pos = self.caret_byte_offset;
 
-        let new_breaks = normalized
-            .chars()
-            .filter(|&c| c == '\n' || c == PAGE_BREAK_CHAR)
-            .count();
-        if new_breaks > 0 {
-            let cur_p = self.paragraph_index_at(pos);
-            let cur_align = self
-                .para_alignments
-                .get(cur_p)
-                .copied()
-                .unwrap_or(TextAlignment::Left);
-            for offset in 1..=new_breaks {
-                let insert_at = (cur_p + offset).min(self.para_alignments.len());
-                self.para_alignments.insert(insert_at, cur_align);
-            }
-        }
-
-        self.content.insert_str(pos, &normalized);
-        shift_spans_on_insert(&mut self.spans, pos, normalized.len(), self.active_style);
-        self.caret_byte_offset += normalized.len();
+        self.insert_normalized_at(pos, &normalized, self.active_style);
+        self.caret_byte_offset = pos + normalized.len();
         self.selection_start = None;
-        self.sync_para_alignments();
-        self.mark_content_changed();
     }
 
     pub fn handle_text_input(&mut self, text: &str, allow_telex: bool) {
@@ -538,15 +605,10 @@ impl EditorState {
                     .unwrap_or(self.caret_byte_offset);
                 let current_word = &self.content[word_start..self.caret_byte_offset];
                 if let Some(replaced) = telex::try_apply_telex(current_word, ch) {
-                    self.save_undo_typing(false);
+                    self.save_undo_grouped(UndoGroup::Insert, false);
                     let normalized: String = replaced.nfc().collect();
                     let old_end = self.caret_byte_offset;
-                    let word_style = self
-                        .spans
-                        .iter()
-                        .find(|s| s.start <= word_start && word_start < s.end)
-                        .map(|s| s.style)
-                        .unwrap_or(self.active_style);
+                    let word_style = style_at_offset(&self.spans, word_start + 1);
 
                     self.content.replace_range(word_start..old_end, &normalized);
                     shift_spans_on_delete(&mut self.spans, word_start, old_end);
@@ -582,7 +644,7 @@ impl EditorState {
             .next_back()
             .map(|(offset, _)| offset);
         if let Some(offset) = grapheme_offset {
-            self.save_undo_typing(false);
+            self.save_undo_grouped(UndoGroup::Delete, false);
             self.remove_range_and_sync(offset, end);
             self.caret_byte_offset = offset;
             if end > offset {
@@ -593,10 +655,17 @@ impl EditorState {
     }
 
     pub fn delete_word_backward(&mut self) {
-        if self.delete_selection() || self.caret_byte_offset == 0 {
+        if self.selected_range().is_some() {
+            self.save_undo();
+            self.delete_selection();
+            self.sync_active_style_to_caret();
             return;
         }
-        let prefix = &self.content[..self.caret_byte_offset];
+        if self.caret_byte_offset == 0 {
+            return;
+        }
+        let end = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
+        let prefix = &self.content[..end];
         let mut target_offset = 0;
         let mut passed_char = false;
         for (idx, ch) in prefix.char_indices().rev() {
@@ -610,8 +679,9 @@ impl EditorState {
             }
         }
         self.save_undo();
-        self.selection_start = Some(target_offset);
-        self.delete_selection();
+        self.remove_range_and_sync(target_offset, end);
+        self.caret_byte_offset = target_offset;
+        self.selection_start = None;
         self.sync_active_style_to_caret();
     }
 
@@ -632,7 +702,7 @@ impl EditorState {
             .next()
             .map(|(_, g)| g.len());
         if let Some(len) = grapheme_len {
-            self.save_undo_typing(false);
+            self.save_undo_grouped(UndoGroup::Delete, false);
             let end = start + len;
             self.remove_range_and_sync(start, end);
             self.sync_active_style_to_caret();
@@ -672,6 +742,7 @@ impl EditorState {
     }
 
     pub fn move_left_with_selection(&mut self, keep_selection: bool) {
+        self.undo_group = UndoGroup::None;
         if !keep_selection && let Some((from, _)) = self.selected_range() {
             self.caret_byte_offset = from;
             self.selection_start = None;
@@ -695,6 +766,7 @@ impl EditorState {
     }
 
     pub fn move_right_with_selection(&mut self, keep_selection: bool) {
+        self.undo_group = UndoGroup::None;
         if !keep_selection && let Some((_, to)) = self.selected_range() {
             self.caret_byte_offset = to;
             self.selection_start = None;
@@ -718,6 +790,7 @@ impl EditorState {
     }
 
     pub fn move_to_doc_boundary(&mut self, to_end: bool, keep_selection: bool) {
+        self.undo_group = UndoGroup::None;
         if keep_selection && self.selection_start.is_none() {
             self.selection_start = Some(self.caret_byte_offset);
         } else if !keep_selection {
@@ -728,6 +801,7 @@ impl EditorState {
     }
 
     pub fn move_word_left_with_selection(&mut self, keep_selection: bool) {
+        self.undo_group = UndoGroup::None;
         if keep_selection && self.selection_start.is_none() {
             self.selection_start = Some(self.caret_byte_offset);
         } else if !keep_selection {
@@ -767,6 +841,7 @@ impl EditorState {
     }
 
     pub fn move_word_right_with_selection(&mut self, keep_selection: bool) {
+        self.undo_group = UndoGroup::None;
         if keep_selection && self.selection_start.is_none() {
             self.selection_start = Some(self.caret_byte_offset);
         } else if !keep_selection {
@@ -807,15 +882,16 @@ impl EditorState {
     }
 
     pub fn select_word_at(&mut self, byte_offset: usize) {
+        self.undo_group = UndoGroup::None;
         let clamped = clamp_to_char_boundary(&self.content, byte_offset);
         if self.content.is_empty() {
             return;
         }
-        if self.content[clamped..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_whitespace())
-        {
+        let Some(first_ch) = self.content[clamped..].chars().next() else {
+            return;
+        };
+
+        if first_ch.is_whitespace() {
             let start = self.content[..clamped]
                 .char_indices()
                 .rev()
@@ -835,11 +911,7 @@ impl EditorState {
             return;
         }
 
-        let is_alnum = self.content[clamped..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-
+        let is_alnum = first_ch.is_alphanumeric() || first_ch == '_';
         if is_alnum {
             let start = self.content[..clamped]
                 .char_indices()
@@ -891,13 +963,21 @@ impl EditorState {
         }
         let idx = active_idx.min(matches.len() - 1);
         let (from, to) = matches[idx];
+
         self.save_undo();
-        if let Some(s) = self.spans.iter().find(|s| from >= s.start && from < s.end) {
-            self.active_style = s.style;
-        }
-        self.selection_start = Some(from);
-        self.caret_byte_offset = to;
-        self.insert_text(replacement);
+        let style = style_at_offset(&self.spans, from + 1);
+        self.active_style = style;
+
+        let clean_rep: String = replacement
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .nfc()
+            .collect();
+
+        self.remove_range_and_sync(from, to);
+        self.insert_normalized_at(from, &clean_rep, style);
+        self.caret_byte_offset = from + clean_rep.len();
+        self.selection_start = None;
         true
     }
 
@@ -912,19 +992,19 @@ impl EditorState {
             return 0;
         }
         self.save_undo();
-        let rep_norm: String = replacement.nfc().collect();
+        let rep_norm: String = replacement
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .nfc()
+            .collect();
         let count = matches.len();
+
         for &(from, to) in matches.iter().rev() {
-            let style = self
-                .spans
-                .iter()
-                .find(|s| s.start <= from && from < s.end)
-                .map(|s| s.style)
-                .unwrap_or(self.active_style);
-            self.content.replace_range(from..to, &rep_norm);
-            shift_spans_on_delete(&mut self.spans, from, to);
-            shift_spans_on_insert(&mut self.spans, from, rep_norm.len(), style);
+            let style = style_at_offset(&self.spans, from + 1);
+            self.remove_range_and_sync(from, to);
+            self.insert_normalized_at(from, &rep_norm, style);
         }
+
         self.caret_byte_offset = clamp_to_char_boundary(&self.content, self.caret_byte_offset);
         self.selection_start = None;
         self.sync_para_alignments();
@@ -1054,13 +1134,24 @@ mod tests {
     }
 
     #[test]
-    fn test_undo_coalescing_reduces_snapshots() {
+    fn test_undo_coalescing_reduces_snapshots_and_separates_delete() {
         let mut ed = EditorState::from_plain_text("");
         for ch in "abcdef".chars() {
             ed.insert_text(&ch.to_string());
         }
         assert_eq!(ed.content, "abcdef");
         assert_eq!(ed.undo_stack.len(), 1);
+
+        // Xóa ký tự phải tạo một bước Undo riêng biệt, không gộp lẫn vào bước Insert
+        ed.backspace();
+        ed.backspace();
+        assert_eq!(ed.content, "abcd");
+        assert_eq!(ed.undo_stack.len(), 2);
+
+        assert!(ed.undo());
+        assert_eq!(ed.content, "abcdef");
+        assert!(ed.undo());
+        assert_eq!(ed.content, "");
     }
 
     #[test]
@@ -1076,11 +1167,19 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_word_backward() {
+    fn test_delete_word_backward_and_undo_with_selection() {
         let mut ed = EditorState::from_plain_text("Xin chào các bạn");
         ed.delete_word_backward();
         assert_eq!(ed.content, "Xin chào các ");
         ed.delete_word_backward();
+        assert_eq!(ed.content, "Xin chào ");
+
+        // Bôi đen "Xin " và gọi delete_word_backward -> phải lưu Undo
+        ed.selection_start = Some(0);
+        ed.caret_byte_offset = 4;
+        ed.delete_word_backward();
+        assert_eq!(ed.content, "chào ");
+        assert!(ed.undo());
         assert_eq!(ed.content, "Xin chào ");
     }
 
@@ -1106,6 +1205,17 @@ mod tests {
         assert_eq!(ed.content, "Việt Nam đẹp lắm. Người Việt yêu hòa bình.");
         assert!(ed.undo());
         assert_eq!(ed.content, "Việt Nam đẹp lắm. Người việt yêu hòa bình.");
+    }
+
+    #[test]
+    fn test_replace_current_match_single_undo_step() {
+        let mut ed = EditorState::from_plain_text("Xin chào bạn");
+        assert!(ed.replace_current_match("chào", "kính chào", false, 0));
+        assert_eq!(ed.content, "Xin kính chào bạn");
+        // Chỉ tốn đúng 1 bước Undo để quay về ban đầu
+        assert_eq!(ed.undo_stack.len(), 1);
+        assert!(ed.undo());
+        assert_eq!(ed.content, "Xin chào bạn");
     }
 
     #[test]
@@ -1140,7 +1250,6 @@ mod tests {
     #[test]
     fn test_replace_all_preserves_utf8_caret_boundary() {
         let mut ed = EditorState::from_plain_text("abc tiếng Việt");
-        // Đặt con trỏ vào byte 8 (trước/sau vùng bị rút ngắn khiến độ dài dịch chuyển)
         ed.caret_byte_offset = ed.content.find("Việt").unwrap() + "Việt".len();
         ed.replace_all_matches("abc", "cộng hòa", false);
         assert!(ed.content.is_char_boundary(ed.caret_byte_offset));
@@ -1151,12 +1260,10 @@ mod tests {
     #[test]
     fn test_delete_forward_word_and_whitespace_double_click() {
         let mut ed = EditorState::from_plain_text("Cộng hòa Xã hội");
-        // Đặt con trỏ ngay sau "Cộng" (trước " hòa") và xóa chữ phía sau -> phải giữ nguyên "Cộng"
         ed.caret_byte_offset = "Cộng".len();
         ed.delete_word_forward();
         assert_eq!(ed.content, "Cộng Xã hội");
 
-        // Double-click vào dấu cách giữa "Cộng" và "Xã" không được chọn lùi vào "Cộng"
         ed.select_word_at("Cộng".len());
         assert_eq!(ed.copy_selection(), Some(" ".to_string()));
         ed.delete_forward();
@@ -1166,17 +1273,14 @@ mod tests {
     #[test]
     fn test_double_click_punctuation_separation_and_word_nav() {
         let mut ed = EditorState::from_plain_text("Xin chào, bạn!");
-        // Double-click vào chữ "chào" không được dính dấu phẩy
         let chao_pos = ed.content.find("chào").unwrap();
         ed.select_word_at(chao_pos);
         assert_eq!(ed.copy_selection(), Some("chào".to_string()));
 
-        // Double-click vào dấu phẩy ',' chỉ chọn riêng dấu phẩy
         let comma_pos = ed.content.find(',').unwrap();
         ed.select_word_at(comma_pos);
         assert_eq!(ed.copy_selection(), Some(",".to_string()));
 
-        // Di chuyển bằng Ctrl+Arrow (move_word_left/right)
         ed.caret_byte_offset = 0;
         ed.move_word_right_with_selection(false);
         assert_eq!(ed.caret_byte_offset, "Xin".len());
@@ -1195,7 +1299,6 @@ mod tests {
     #[test]
     fn test_format_painter_copy_and_apply() {
         let mut ed = EditorState::from_plain_text("Văn bản gốc cần sao chép định dạng.");
-        // Gán style cho "Văn bản"
         let van_ban_len = "Văn bản".len();
         ed.selection_start = Some(0);
         ed.caret_byte_offset = van_ban_len;
@@ -1204,25 +1307,21 @@ mod tests {
             s.font_size = 20.0;
         });
 
-        // Bật format painter tại vùng chọn "Văn bản"
         ed.toggle_format_painter();
         assert!(ed.format_painter_style.is_some());
         let copied = ed.format_painter_style.unwrap();
         assert!(copied.bold);
         assert_eq!(copied.font_size, 20.0);
 
-        // Chọn "định dạng" ở cuối câu
         let target_pos = ed.content.find("định dạng").unwrap();
         let target_len = "định dạng".len();
         ed.selection_start = Some(target_pos);
         ed.caret_byte_offset = target_pos + target_len;
 
-        // Áp dụng chổi sơn
         let applied = ed.apply_format_painter_if_active();
         assert!(applied);
-        assert!(ed.format_painter_style.is_none()); // Đã tự tắt sau khi sơn
+        assert!(ed.format_painter_style.is_none());
 
-        // Kiểm tra span tại "định dạng"
         let span_match = ed
             .spans
             .iter()
@@ -1244,7 +1343,6 @@ mod tests {
             s.font_size = 24.0;
         });
 
-        // Xóa định dạng toàn bộ
         ed.clear_formatting();
         let def = TextStyle::default();
         assert_eq!(ed.active_style, def);
@@ -1256,28 +1354,24 @@ mod tests {
     #[test]
     fn test_document_preset_styles() {
         let mut ed = EditorState::from_plain_text("Dòng tiêu đề chính\nDòng nội dung bình thường.");
-        // Áp dụng Heading 1 cho dòng đầu tiên
         let line1_len = "Dòng tiêu đề chính".len();
-        ed.caret_byte_offset = 5; // Nằm ở giữa dòng 1
+        ed.caret_byte_offset = 5;
         ed.apply_preset_style(DocumentPresetStyle::Heading1);
 
         let h1_style = DocumentPresetStyle::Heading1.to_text_style();
         assert_eq!(ed.active_style.font_size, h1_style.font_size);
         assert!(ed.active_style.bold);
 
-        // Kiểm tra span dòng 1 được áp dụng h1_style
         let span1 = ed.spans.iter().find(|s| s.start == 0).unwrap();
         assert_eq!(span1.end, line1_len);
         assert_eq!(span1.style.font_size, 22.0);
 
-        // Áp dụng Quote cho dòng 2
         ed.caret_byte_offset = line1_len + 5;
         ed.apply_preset_style(DocumentPresetStyle::Quote);
         let q_style = DocumentPresetStyle::Quote.to_text_style();
         assert!(ed.active_style.italic);
         assert_eq!(ed.active_style.color, q_style.color);
 
-        // Áp dụng Heading 3
         ed.apply_preset_style(DocumentPresetStyle::Heading3);
         assert_eq!(ed.active_style.font_size, 16.0);
         assert!(ed.active_style.bold);
@@ -1286,12 +1380,12 @@ mod tests {
     #[test]
     fn test_bullet_and_numbered_lists() {
         let mut ed = EditorState::from_plain_text("Đoạn 1\nĐoạn 2");
-        ed.caret_byte_offset = 0;
+        // Dù đặt con trỏ ở giữa dòng 1, insert_bullet_item vẫn chèn chuẩn vào đầu dòng 1
+        ed.caret_byte_offset = 3;
         ed.insert_bullet_item();
         assert!(ed.content.starts_with("• Đoạn 1"));
 
-        // Chuyển tới Đoạn 2 và chèn số thứ tự
-        let d2_pos = ed.content.find("Đoạn 2").unwrap();
+        let d2_pos = ed.content.find("Đoạn 2").unwrap() + 2;
         ed.caret_byte_offset = d2_pos;
         ed.insert_numbered_item();
         assert!(ed.content.contains("2. Đoạn 2"));
