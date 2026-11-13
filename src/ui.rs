@@ -853,6 +853,149 @@ pub fn render_confirm_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
     }
 }
 
+pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
+    if !app.show_startup_modal {
+        return;
+    }
+
+    let mut action_open = false;
+    let mut action_new = false;
+    let mut action_sample = false;
+    let mut action_recover = false;
+    let mut action_close = false;
+
+    egui::Window::new("Khởi động MyWord")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .frame(
+            egui::Frame::window(&ctx.style())
+                .fill(theme.surface_bg)
+                .stroke(Stroke::new(1.0_f32, theme.border_color))
+                .inner_margin(egui::Margin::same(20.0)),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    draw_app_logo(ui);
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("Bắt đầu làm việc")
+                                .size(17.0)
+                                .strong()
+                                .color(theme.text_main),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Chọn tệp văn bản hoặc bắt đầu trang soạn thảo mới",
+                            )
+                            .size(12.0)
+                            .color(theme.text_muted),
+                        );
+                    });
+                });
+
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(10.0);
+
+                // Nút 1: Mở tệp từ máy tính
+                let open_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("📂  Mở tệp từ máy tính... (.doc, .mwd, .txt)")
+                            .size(13.5)
+                            .color(theme.primary_accent)
+                            .strong(),
+                    )
+                    .min_size(Vec2::new(380.0, 36.0)),
+                );
+                if open_btn.clicked() {
+                    action_open = true;
+                }
+
+                ui.add_space(6.0);
+
+                // Nút 2: Tạo tài liệu trống
+                let new_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("📝  Tạo trang tài liệu mới (Trống)")
+                            .size(13.0)
+                            .color(theme.text_main),
+                    )
+                    .min_size(Vec2::new(380.0, 32.0)),
+                );
+                if new_btn.clicked() {
+                    action_new = true;
+                }
+
+                ui.add_space(6.0);
+
+                // Nút 3: Dùng văn bản mẫu
+                let sample_btn = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("📑  Dùng văn bản mẫu & Hướng dẫn")
+                            .size(13.0)
+                            .color(theme.text_main),
+                    )
+                    .min_size(Vec2::new(380.0, 32.0)),
+                );
+                if sample_btn.clicked() {
+                    action_sample = true;
+                }
+
+                if app.show_recovery_banner {
+                    ui.add_space(6.0);
+                    let rec_btn = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("🔄  Khôi phục bản sao lưu tự động (.doc)")
+                                .size(13.0)
+                                .color(Color32::from_rgb(234, 88, 12))
+                                .strong(),
+                        )
+                        .min_size(Vec2::new(380.0, 32.0)),
+                    );
+                    if rec_btn.clicked() {
+                        action_recover = true;
+                    }
+                }
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(egui::RichText::new("Bỏ qua").size(12.0))
+                        .clicked()
+                    {
+                        action_close = true;
+                    }
+                });
+            });
+        });
+
+    if action_open {
+        app.show_startup_modal = false;
+        app.trigger_open_dialog(ctx.clone());
+    } else if action_new {
+        app.show_startup_modal = false;
+        app.new_document();
+    } else if action_sample {
+        app.show_startup_modal = false;
+        app.editor = crate::editor::EditorState::default();
+        app.cached_layout = None;
+        app.scroll_to_caret = true;
+        app.set_status("Đã nạp văn bản mẫu");
+    } else if action_recover {
+        app.show_startup_modal = false;
+        app.recover_autosave();
+    } else if action_close {
+        app.show_startup_modal = false;
+    }
+}
+
 pub fn render_status_bar(
     ctx: &egui::Context,
     app: &mut MyWordApp,

@@ -7,7 +7,8 @@ use crate::platform::{
 };
 use crate::ui::{
     ThemePalette, render_confirm_modal, render_find_replace_bar, render_header_bar,
-    render_page_canvas, render_recovery_banner, render_ribbon_bar, render_status_bar,
+    render_page_canvas, render_recovery_banner, render_ribbon_bar, render_startup_modal,
+    render_status_bar,
 };
 use eframe::egui::{self, Pos2};
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ pub struct MyWordApp {
     pub post_save_action: Option<ConfirmAction>,
     pub pending_drop_path: Option<PathBuf>,
     pub show_recovery_banner: bool,
+    pub show_startup_modal: bool,
     pub last_external_backspace: Option<Instant>,
     pub scroll_to_caret: bool,
 }
@@ -100,6 +102,7 @@ impl Default for MyWordApp {
             post_save_action: None,
             pending_drop_path: None,
             show_recovery_banner: has_saved,
+            show_startup_modal: true,
             last_external_backspace: None,
             scroll_to_caret: false,
         }
@@ -532,6 +535,14 @@ impl MyWordApp {
                     key: egui::Key::Escape,
                     pressed: true,
                     ..
+                } if self.show_startup_modal => {
+                    self.show_startup_modal = false;
+                    continue;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Escape,
+                    pressed: true,
+                    ..
                 } if self.find_bar_open => {
                     self.find_bar_open = false;
                     self.replace_bar_open = false;
@@ -540,7 +551,7 @@ impl MyWordApp {
                 _ => {}
             }
 
-            if ui_wants_kb {
+            if ui_wants_kb || self.show_startup_modal || self.pending_confirm.is_some() {
                 continue;
             }
 
@@ -740,6 +751,7 @@ impl eframe::App for MyWordApp {
         let ime_output_rect = render_page_canvas(ctx, self, &theme, total_pages, show_caret);
 
         if !ui_wants_kb
+            && !self.show_startup_modal
             && self.pending_confirm.is_none()
             && let Some((area_rect, cursor_rect)) = ime_output_rect
         {
@@ -751,6 +763,7 @@ impl eframe::App for MyWordApp {
             });
         }
 
+        render_startup_modal(ctx, self, &theme);
         render_confirm_modal(ctx, self, &theme);
 
         let next_blink_ms = (CARET_BLINK_MS - (elapsed_ms % CARET_BLINK_MS)).max(16);
@@ -783,7 +796,10 @@ mod tests {
 
     #[test]
     fn test_typing_resets_last_typing_time_and_clears_ime_preedit() {
-        let mut app = MyWordApp::default();
+        let mut app = MyWordApp {
+            show_startup_modal: false,
+            ..Default::default()
+        };
         app.editor.ime_preedit = Some("tam".to_string());
         let before = Instant::now() - Duration::from_secs(5);
         app.last_typing_time = before;
@@ -797,5 +813,32 @@ mod tests {
         assert!(app.editor.ime_preedit.is_none());
         assert!(app.last_typing_time > before);
         assert!(app.last_typing_time.elapsed().as_millis() < 550);
+    }
+
+    #[test]
+    fn test_startup_modal_blocks_typing_until_closed() {
+        let mut app = MyWordApp::default();
+        assert!(app.show_startup_modal);
+
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Text("hello".to_string()));
+        });
+        app.process_events(&ctx, false);
+        // Khi modal đang mở, text không được đưa vào editor
+        assert!(!app.editor.content.contains("hello"));
+
+        // Đóng modal bằng Escape
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        });
+        app.process_events(&ctx, false);
+        assert!(!app.show_startup_modal);
     }
 }

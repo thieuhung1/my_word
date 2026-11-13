@@ -594,6 +594,197 @@ pub fn serialize_mwd(content: &str, spans: &[StyleSpan], aligns: &[TextAlignment
     out
 }
 
+/// Xuất tài liệu sang định dạng Microsoft Word HTML Document (.doc)
+/// Tương thích 100% với Microsoft Word, WPS Office, LibreOffice và Google Docs.
+pub fn export_word_doc(content: &str, spans: &[StyleSpan], aligns: &[TextAlignment]) -> String {
+    let mwd_payload = serialize_mwd(content, spans, aligns);
+
+    let mut html = String::with_capacity(content.len() * 2 + 1024);
+    html.push_str("<!DOCTYPE html>\n");
+    html.push_str("<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>\n");
+    html.push_str("<head>\n<meta charset='utf-8'>\n<title>Tài liệu</title>\n");
+
+    // Nhúng khối dữ liệu gốc MyWord để đảm bảo 100% lossless khi mở lại trong MyWord
+    html.push_str("<!-- MYWORD_DATA:\n");
+    html.push_str(&mwd_payload);
+    html.push_str("\n-->\n");
+
+    // Khai báo Word Document Section & Page Setup (Khổ A4, margin 1in, Print view)
+    html.push_str("<!--[if gte mso 9]>\n<xml>\n<w:WordDocument>\n<w:View>Print</w:View>\n<w:Zoom>100</w:Zoom>\n<w:DoNotOptimizeForBrowser/>\n</w:WordDocument>\n</xml>\n<![endif]-->\n");
+    html.push_str("<style>\n@page {\n  size: 210mm 297mm;\n  margin: 1in;\n  mso-page-orientation: portrait;\n}\nbody {\n  font-family: 'Segoe UI', Arial, sans-serif;\n  font-size: 14pt;\n  color: #1e293b;\n  line-height: 1.5;\n}\np {\n  margin: 0 0 6pt 0;\n}\n.page-break {\n  page-break-before: always;\n  mso-break-type: section-break;\n}\n</style>\n</head>\n<body>\n");
+
+    let total_len = content.len();
+    let mut full_spans = spans.to_vec();
+    ensure_full_coverage(&mut full_spans, total_len, TextStyle::default());
+
+    let mut i = 0;
+    let mut align_idx = 0;
+
+    while i < total_len {
+        let (rel_end, is_page_break, delimiter_len) =
+            if let Some(rel) = content[i..].find(['\n', PAGE_BREAK_CHAR]) {
+                let ch = content[i + rel..].chars().next().unwrap();
+                (rel, ch == PAGE_BREAK_CHAR, ch.len_utf8())
+            } else {
+                (content[i..].len(), false, 0)
+            };
+        let p_end = i + rel_end;
+
+        let align = aligns
+            .get(align_idx)
+            .copied()
+            .unwrap_or(TextAlignment::Left);
+        let align_css = match align {
+            TextAlignment::Left => "text-align: left;",
+            TextAlignment::Center => "text-align: center;",
+            TextAlignment::Right => "text-align: right;",
+            TextAlignment::Justify => "text-align: justify;",
+        };
+
+        if is_page_break {
+            html.push_str("<div class='page-break'></div>\n");
+        }
+
+        html.push_str("<p style='");
+        html.push_str(align_css);
+        html.push_str("'>");
+
+        if i == p_end {
+            html.push_str("&nbsp;");
+        } else {
+            let p_spans = spans_for_slice(&full_spans, i, p_end);
+            for (rel_start, rel_end, style) in p_spans {
+                let chunk = &content[i + rel_start..i + rel_end];
+                let escaped = escape_html(chunk);
+
+                let mut open_tags = String::new();
+                let mut close_tags = String::new();
+
+                let has_custom_style = (style.font_size - 14.0).abs() > 0.1
+                    || style.color != [0, 0, 0]
+                    || style.highlight.is_some();
+
+                if has_custom_style {
+                    let mut inline_css = String::new();
+                    if (style.font_size - 14.0).abs() > 0.1 {
+                        let _ = write!(inline_css, "font-size: {:.1}pt; ", style.font_size);
+                    }
+                    if style.color != [0, 0, 0] {
+                        let _ = write!(
+                            inline_css,
+                            "color: rgb({},{},{}); ",
+                            style.color[0], style.color[1], style.color[2]
+                        );
+                    }
+                    if let Some([hr, hg, hb]) = style.highlight {
+                        let _ = write!(inline_css, "background-color: rgb({},{},{}); ", hr, hg, hb);
+                    }
+                    open_tags.push_str(&format!("<span style='{}'>", inline_css.trim()));
+                    close_tags.insert_str(0, "</span>");
+                }
+
+                if style.bold {
+                    open_tags.push_str("<b>");
+                    close_tags.insert_str(0, "</b>");
+                }
+                if style.italic {
+                    open_tags.push_str("<i>");
+                    close_tags.insert_str(0, "</i>");
+                }
+                if style.underline {
+                    open_tags.push_str("<u>");
+                    close_tags.insert_str(0, "</u>");
+                }
+                if style.strikethrough {
+                    open_tags.push_str("<s>");
+                    close_tags.insert_str(0, "</s>");
+                }
+
+                html.push_str(&open_tags);
+                html.push_str(&escaped);
+                html.push_str(&close_tags);
+            }
+        }
+
+        html.push_str("</p>\n");
+
+        i = p_end + delimiter_len;
+        align_idx += 1;
+    }
+
+    html.push_str("</body>\n</html>\n");
+    html
+}
+
+fn escape_html(s: &str) -> String {
+    let mut res = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => res.push_str("&amp;"),
+            '<' => res.push_str("&lt;"),
+            '>' => res.push_str("&gt;"),
+            '"' => res.push_str("&quot;"),
+            '\'' => res.push_str("&#39;"),
+            _ => res.push(c),
+        }
+    }
+    res
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut text = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut in_script_or_style = false;
+    let mut tag_name = String::new();
+
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '<' {
+            in_tag = true;
+            tag_name.clear();
+            i += 1;
+            while i < chars.len() && chars[i] != '>' && !chars[i].is_whitespace() {
+                tag_name.push(chars[i].to_ascii_lowercase());
+                i += 1;
+            }
+            if tag_name == "style" || tag_name == "script" {
+                in_script_or_style = true;
+            } else if tag_name == "/style" || tag_name == "/script" {
+                in_script_or_style = false;
+            } else if matches!(tag_name.as_str(), "p" | "br" | "div" | "/p" | "tr")
+                && !text.ends_with('\n')
+                && !text.is_empty()
+            {
+                text.push('\n');
+            }
+            while i < chars.len() && chars[i] != '>' {
+                i += 1;
+            }
+            if i < chars.len() && chars[i] == '>' {
+                in_tag = false;
+                i += 1;
+            }
+            continue;
+        }
+
+        if !in_tag && !in_script_or_style {
+            text.push(c);
+        }
+        i += 1;
+    }
+
+    let decoded = text
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'");
+    decoded.trim().to_string()
+}
+
 const MAX_DESERIALIZE_SPANS: usize = 100_000;
 const MAX_DESERIALIZE_ALIGNS: usize = 50_000;
 
@@ -635,6 +826,43 @@ pub fn deserialize_document(
     raw: &str,
     path: &Path,
 ) -> (String, Vec<StyleSpan>, Vec<TextAlignment>) {
+    // 0. Nếu tệp chứa khối dữ liệu gốc <!-- MYWORD_DATA:\n ... \n--> (từ tệp .doc do MyWord xuất ra)
+    const MWD_DATA_START: &str = "<!-- MYWORD_DATA:\n";
+    const MWD_DATA_END: &str = "\n-->";
+    if let Some(start_idx) = raw.find(MWD_DATA_START) {
+        let after_start = start_idx + MWD_DATA_START.len();
+        if let Some(end_idx) = raw[after_start..].find(MWD_DATA_END) {
+            let embedded = &raw[after_start..after_start + end_idx];
+            return deserialize_document(embedded, Path::new("embedded.mwd"));
+        }
+    }
+
+    // 0.1. Nếu là tệp HTML / Word document (.doc/.htm/.html) không có metadata nhúng
+    let is_html_or_doc = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        e.eq_ignore_ascii_case("doc")
+            || e.eq_ignore_ascii_case("docx")
+            || e.eq_ignore_ascii_case("html")
+            || e.eq_ignore_ascii_case("htm")
+    }) || raw.trim_start().starts_with("<!DOCTYPE")
+        || raw.trim_start().starts_with("<html");
+
+    if is_html_or_doc {
+        let plain = strip_html_tags(raw);
+        let (text, _) = normalize_text_and_build_byte_map(&plain);
+        let len = text.len();
+        let spans = if len > 0 {
+            vec![StyleSpan {
+                start: 0,
+                end: len,
+                style: TextStyle::default(),
+            }]
+        } else {
+            Vec::new()
+        };
+        let para_count = text.split(['\n', PAGE_BREAK_CHAR]).count().max(1);
+        return (text, spans, vec![TextAlignment::Left; para_count]);
+    }
+
     let has_mwd_ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -1072,5 +1300,56 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].start, 0);
         assert_eq!(spans[0].end, 10);
+    }
+
+    #[test]
+    fn test_export_word_doc_roundtrip_and_html_fallback() {
+        let content = "Tiêu đề tài liệu\nĐoạn văn có chữ đậm và nghiêng.";
+        let mut spans = vec![
+            StyleSpan {
+                start: 0,
+                end: "Tiêu đề tài liệu".len(),
+                style: TextStyle {
+                    bold: true,
+                    font_size: 20.0,
+                    ..Default::default()
+                },
+            },
+            StyleSpan {
+                start: "Tiêu đề tài liệu\nĐoạn văn có ".len(),
+                end: "Tiêu đề tài liệu\nĐoạn văn có chữ đậm".len(),
+                style: TextStyle {
+                    bold: true,
+                    ..Default::default()
+                },
+            },
+        ];
+        ensure_full_coverage(&mut spans, content.len(), TextStyle::default());
+        let aligns = vec![TextAlignment::Center, TextAlignment::Justify];
+
+        let html_doc = export_word_doc(content, &spans, &aligns);
+
+        // 1. Phải chứa các thẻ HTML đặc trưng của Word Document
+        assert!(html_doc.contains("<w:WordDocument>"));
+        assert!(html_doc.contains("<!-- MYWORD_DATA:"));
+        assert!(html_doc.contains("text-align: center;"));
+        assert!(html_doc.contains("text-align: justify;"));
+        assert!(html_doc.contains("<b>"));
+
+        // 2. Roundtrip qua deserialize_document khôi phục đúng 100%
+        let (out_content, out_spans, out_aligns) =
+            deserialize_document(&html_doc, Path::new("test.doc"));
+        assert_eq!(out_content, content);
+        assert_eq!(out_aligns, aligns);
+        assert_eq!(out_spans, spans);
+
+        // 3. Mở tệp HTML thông thường không có MYWORD_DATA metadata
+        let external_html = "<html><body><p>Dòng 1</p><p>Dòng 2 &amp; bạn bè</p></body></html>";
+        let (ext_content, ext_spans, ext_aligns) =
+            deserialize_document(external_html, Path::new("external.doc"));
+        assert!(ext_content.contains("Dòng 1"));
+        assert!(ext_content.contains("Dòng 2 & bạn bè"));
+        assert_eq!(ext_aligns.len(), 2);
+        assert!(!ext_spans.is_empty());
     }
 }

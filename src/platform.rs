@@ -1,5 +1,5 @@
 use crate::document::{
-    PAGE_BREAK_CHAR, StyleSpan, TextAlignment, deserialize_document, serialize_mwd,
+    PAGE_BREAK_CHAR, StyleSpan, TextAlignment, deserialize_document, export_word_doc, serialize_mwd,
 };
 use crate::editor::EditorState;
 use eframe::egui::{self, FontFamily};
@@ -11,8 +11,8 @@ pub enum FileDialogResult {
     Save(PathBuf),
 }
 
-const OPEN_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'My Word / Text (*.mwd;*.txt;*.md)|*.mwd;*.txt;*.md|All files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
-const SAVE_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = 'My Word Rich Text (*.mwd)|*.mwd|Plain Text (*.txt)|*.txt|Markdown (*.md)|*.md'; $d.FileName = 'tai_lieu.mwd'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
+const OPEN_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; $d.Filter = 'Tệp văn bản (*.doc;*.mwd;*.txt;*.md)|*.doc;*.mwd;*.txt;*.md|Microsoft Word (*.doc)|*.doc|My Word Rich Text (*.mwd)|*.mwd|Plain Text (*.txt)|*.txt|Markdown (*.md)|*.md|All files (*.*)|*.*'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
+const SAVE_DIALOG_SCRIPT: &str = r#"Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Filter = 'Microsoft Word (*.doc)|*.doc|My Word Rich Text (*.mwd)|*.mwd|Plain Text (*.txt)|*.txt|Markdown (*.md)|*.md'; $d.FileName = 'tai_lieu.doc'; if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $OutputEncoding = [System.Text.Encoding]::UTF8; try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}; Write-Output $d.FileName }"#;
 
 fn spawn_powershell_dialog<F>(
     ctx: egui::Context,
@@ -58,12 +58,16 @@ pub fn spawn_save_dialog(ctx: egui::Context) -> Receiver<Option<FileDialogResult
 }
 
 pub fn write_document(path: &Path, editor: &EditorState) -> Result<(), std::io::Error> {
-    let is_plain = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("txt") || e.eq_ignore_ascii_case("md"));
-    let payload = if is_plain {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    let payload = if ext.eq_ignore_ascii_case("txt") || ext.eq_ignore_ascii_case("md") {
         editor.content.replace(PAGE_BREAK_CHAR, "\n")
+    } else if ext.eq_ignore_ascii_case("doc")
+        || ext.eq_ignore_ascii_case("docx")
+        || ext.eq_ignore_ascii_case("htm")
+        || ext.eq_ignore_ascii_case("html")
+    {
+        export_word_doc(&editor.content, &editor.spans, &editor.para_alignments)
     } else {
         serialize_mwd(&editor.content, &editor.spans, &editor.para_alignments)
     };
@@ -97,24 +101,37 @@ pub fn autosave_path() -> Option<PathBuf> {
     })
 }
 
+pub fn autosave_path_doc() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|local_app| {
+        PathBuf::from(local_app)
+            .join("my_word")
+            .join("autosave.doc")
+    })
+}
+
 pub fn has_autosave() -> bool {
-    if let Some(path) = autosave_path() {
-        path.is_file()
-            && std::fs::metadata(&path)
-                .map(|m| m.len() > 0)
-                .unwrap_or(false)
-    } else {
-        false
-    }
+    let has_mwd = autosave_path().is_some_and(|p| {
+        p.is_file() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
+    });
+    let has_doc = autosave_path_doc().is_some_and(|p| {
+        p.is_file() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
+    });
+    has_mwd || has_doc
 }
 
 pub fn read_autosave() -> Result<(String, Vec<StyleSpan>, Vec<TextAlignment>), std::io::Error> {
-    if let Some(path) = autosave_path() {
+    if let Some(path) = autosave_path()
+        && path.is_file()
+    {
         load_document(&path)
+    } else if let Some(doc_path) = autosave_path_doc()
+        && doc_path.is_file()
+    {
+        load_document(&doc_path)
     } else {
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
-            "Thư mục LOCALAPPDATA không tồn tại",
+            "Thư mục LOCALAPPDATA không tồn tại hoặc không có tệp sao lưu",
         ))
     }
 }
@@ -125,6 +142,11 @@ pub fn clear_autosave() {
     {
         let _ = std::fs::remove_file(path);
     }
+    if let Some(doc_path) = autosave_path_doc()
+        && doc_path.is_file()
+    {
+        let _ = std::fs::remove_file(doc_path);
+    }
 }
 
 pub fn write_autosave(editor: &EditorState) {
@@ -133,7 +155,15 @@ pub fn write_autosave(editor: &EditorState) {
             let _ = std::fs::create_dir_all(parent);
         }
         let payload = serialize_mwd(&editor.content, &editor.spans, &editor.para_alignments);
-        let _ = std::fs::write(path, payload.as_bytes());
+        let _ = std::fs::write(&path, payload.as_bytes());
+    }
+    // Luôn sao lưu song song thành file .doc chuẩn Microsoft Word
+    if let Some(doc_path) = autosave_path_doc() {
+        if let Some(parent) = doc_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let doc_payload = export_word_doc(&editor.content, &editor.spans, &editor.para_alignments);
+        let _ = std::fs::write(&doc_path, doc_payload.as_bytes());
     }
 }
 
@@ -234,6 +264,9 @@ mod tests {
         let ed = EditorState::from_plain_text("Văn bản kiểm thử lưu tự động");
         write_autosave(&ed);
         assert!(has_autosave());
+        if let Some(doc_p) = autosave_path_doc() {
+            assert!(doc_p.is_file());
+        }
 
         let res = read_autosave();
         assert!(res.is_ok());
@@ -244,5 +277,8 @@ mod tests {
 
         clear_autosave();
         assert!(!has_autosave());
+        if let Some(doc_p) = autosave_path_doc() {
+            assert!(!doc_p.is_file());
+        }
     }
 }

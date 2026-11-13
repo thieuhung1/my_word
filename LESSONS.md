@@ -17,6 +17,8 @@ File ghi nhớ tự động các bài học và quy tắc rút kinh nghiệm t�
 - [x1] Khi giới hạn phạm vi số nguyên/kích thước bộ nhớ đệm (capacity clamp) trong Rust → Dùng phương thức chuẩn `.clamp(min, max)` thay vì chuỗi `.min().max()` thủ công để tuân thủ linter `clippy::manual_clamp` và đảm bảo an toàn panic → kiểm tra: `cargo clippy` chạy exit 0 không cảnh báo.
 - [x1] Khi thiết kế kiến trúc module và lịch sử hoàn tác (Undo/Redo) → Tách sạch phụ thuộc hình tròn (platform không phụ thuộc ui, chuyển visual styling sang `ThemePalette::apply` gọi tại `main`), và dùng `std::collections::VecDeque` với `pop_front()` $O(1)$ thay cho `Vec::remove(0)` $O(N)$ cho ring buffer lịch sử soạn thảo → kiểm tra: `cargo test` đạt 35/35 pass và đồ thị module là DAG phi chu trình.
 - [x1] Khi vẽ widget tương tác trong status bar/canvas hoặc kiểm tra điều kiện lồng nhau (WPS UI & Clippy) → Truyền tham chiếu khả biến `&mut MyWordApp` cho `render_status_bar` khi cần điều chỉnh trạng thái `zoom`, import `Shape` từ `eframe::egui` cho `convex_polygon`, và gộp điều kiện lồng `if let` bằng toán tử `&& let` → kiểm tra: `cargo clippy --all-targets -- -D warnings` exit 0 và `cargo test` đạt 39/39 pass.
+- [x1] Khi xuất tài liệu HTML Word (.doc) và quét ranh giới đoạn văn (Paragraph & Page Break) → Tuyệt đối không duyệt tăng chỉ số byte thô `p_end += 1` rồi cắt lát `content[p_end..]` (gây panic rơi vào giữa ký tự tiếng Việt đa byte như 'ê', 'ă') mà phải dùng `.find(['\n', PAGE_BREAK_CHAR])` để luôn trả về vị trí char boundary hợp lệ → kiểm tra: test `test_export_word_doc_roundtrip_and_html_fallback` và `test_autosave_lifecycle_write_read_clear` chạy pass.
+
 
 
 
