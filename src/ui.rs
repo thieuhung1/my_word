@@ -1023,19 +1023,46 @@ pub fn render_page_canvas(
                                     );
                                 }
 
-                                if app.editor.caret_byte_offset >= placed_b_start
-                                    && app.editor.caret_byte_offset <= placed_b_end
-                                {
+                                let is_last_chunk = placed.row_end >= p.galley.rows.len();
+                                let in_this_chunk = if is_last_chunk {
+                                    app.editor.caret_byte_offset >= placed_b_start
+                                        && app.editor.caret_byte_offset <= placed_b_end
+                                } else {
+                                    app.editor.caret_byte_offset >= placed_b_start
+                                        && app.editor.caret_byte_offset < placed_b_end
+                                };
+
+                                if in_this_chunk {
+                                    let total_chars = p_text.chars().count();
                                     let c_idx = char_index_from_byte_offset(
                                         p_text,
-                                        app.editor.caret_byte_offset - p.start,
+                                        app.editor.caret_byte_offset.saturating_sub(p.start),
                                     );
-                                    let local_rect = p.galley.pos_from_cursor(
-                                        &p.galley.from_ccursor(egui::text::CCursor::new(c_idx)),
-                                    );
-                                    let caret_x = draw_x + local_rect.min.x;
-                                    let caret_y = cursor_y - row_min_y + local_rect.min.y;
-                                    let c_h = local_rect.height().max(base_line_height * 0.85);
+
+                                    // Tính tọa độ con trỏ: nếu ở cuối đoạn (bên phải), lấy trực tiếp mép phải glyph cuối
+                                    let (rel_x, rel_y, line_h) = if c_idx >= total_chars
+                                        && total_chars > 0
+                                    {
+                                        if let Some(last_row) = p.galley.rows.last() {
+                                            let right_x = last_row
+                                                .glyphs
+                                                .last()
+                                                .map(|g| g.pos.x + g.size.x)
+                                                .unwrap_or(last_row.rect.max.x);
+                                            (right_x, last_row.rect.min.y, last_row.rect.height())
+                                        } else {
+                                            (0.0, 0.0, base_line_height)
+                                        }
+                                    } else {
+                                        let local_rect = p.galley.pos_from_cursor(
+                                            &p.galley.from_ccursor(egui::text::CCursor::new(c_idx)),
+                                        );
+                                        (local_rect.min.x, local_rect.min.y, local_rect.height())
+                                    };
+
+                                    let caret_x = draw_x + rel_x;
+                                    let caret_y = cursor_y - row_min_y + rel_y;
+                                    let c_h = line_h.max(base_line_height * 0.85);
 
                                     ptr_state.next_caret_pos = Some(Pos2::new(caret_x, caret_y));
 
@@ -1049,34 +1076,8 @@ pub fn render_page_canvas(
                                         );
                                         app.scroll_to_caret = false;
                                     }
-                                    // Nếu có preedit, IME candidate window hiện sau preedit
-                                    let ime_cursor_x =
-                                        if let Some(preedit) = &app.editor.ime_preedit {
-                                            let p_font =
-                                                font_id_for_style(&app.editor.active_style, zoom);
-                                            let pw = ctx.fonts(|f| {
-                                                f.layout_no_wrap(
-                                                    preedit.clone(),
-                                                    p_font,
-                                                    theme.primary_accent,
-                                                )
-                                                .size()
-                                                .x
-                                            });
-                                            caret_x + pw
-                                        } else {
-                                            caret_x
-                                        };
-                                    ime_output_rect = Some((
-                                        rect,
-                                        Rect::from_min_size(
-                                            Pos2::new(ime_cursor_x, caret_y),
-                                            Vec2::new(2.0, c_h),
-                                        ),
-                                    ));
 
                                     if let Some(preedit) = &app.editor.ime_preedit {
-                                        // Vẽ preedit TẠI vị trí con trỏ (không lùi ra trước)
                                         let p_font =
                                             font_id_for_style(&app.editor.active_style, zoom);
                                         let preedit_galley = painter.layout_no_wrap(
@@ -1085,22 +1086,35 @@ pub fn render_page_canvas(
                                             theme.primary_accent,
                                         );
                                         let preedit_w = preedit_galley.size().x;
+                                        let after_x = caret_x + preedit_w;
+
+                                        // IME candidate window neo ở sau chuỗi preedit (bên phải con trỏ)
+                                        ime_output_rect = Some((
+                                            rect,
+                                            Rect::from_min_size(
+                                                Pos2::new(after_x, caret_y),
+                                                Vec2::new(2.0, c_h),
+                                            ),
+                                        ));
+
+                                        // 1. Chuỗi preedit tạm vẽ bắt đầu từ caret_x
                                         painter.galley(
                                             Pos2::new(caret_x, caret_y),
                                             preedit_galley,
                                             theme.primary_accent,
                                         );
-                                        // Gạch chân dưới preedit
+
+                                        // 2. Gạch chân dưới chuỗi preedit
                                         painter.line_segment(
                                             [
                                                 Pos2::new(caret_x, caret_y + c_h),
-                                                Pos2::new(caret_x + preedit_w, caret_y + c_h),
+                                                Pos2::new(after_x, caret_y + c_h),
                                             ],
                                             Stroke::new(1.5_f32, theme.primary_accent),
                                         );
-                                        // Con trỏ nháy ở CUỐI preedit (bên phải)
-                                        if show_caret && selected_range.is_none() {
-                                            let after_x = caret_x + preedit_w;
+
+                                        // 3. Con trỏ luôn hiện ở BÊN PHẢI (after_x) khi đang gõ, không nhấp nháy tắt
+                                        if selected_range.is_none() {
                                             painter.line_segment(
                                                 [
                                                     Pos2::new(after_x, caret_y + 1.0),
@@ -1109,15 +1123,25 @@ pub fn render_page_canvas(
                                                 Stroke::new(2.0_f32, theme.primary_accent),
                                             );
                                         }
-                                    } else if show_caret && selected_range.is_none() {
-                                        // Không có preedit: con trỏ bình thường
-                                        painter.line_segment(
-                                            [
-                                                Pos2::new(caret_x, caret_y + 1.0),
-                                                Pos2::new(caret_x, caret_y + c_h),
-                                            ],
-                                            Stroke::new(2.0_f32, theme.primary_accent),
-                                        );
+                                    } else {
+                                        ime_output_rect = Some((
+                                            rect,
+                                            Rect::from_min_size(
+                                                Pos2::new(caret_x, caret_y),
+                                                Vec2::new(2.0, c_h),
+                                            ),
+                                        ));
+
+                                        if show_caret && selected_range.is_none() {
+                                            // Không có preedit: con trỏ bình thường (nhấp nháy sau 550ms không gõ)
+                                            painter.line_segment(
+                                                [
+                                                    Pos2::new(caret_x, caret_y + 1.0),
+                                                    Pos2::new(caret_x, caret_y + c_h),
+                                                ],
+                                                Stroke::new(2.0_f32, theme.primary_accent),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1158,12 +1182,14 @@ pub fn render_page_canvas(
     }
     if let Some(c) = ptr_state.caret_target {
         app.editor.caret_byte_offset = c;
+        app.last_typing_time = std::time::Instant::now();
     }
     if ptr_state.sync_style {
         app.editor.sync_active_style_to_caret();
     }
     if let Some(word_offset) = ptr_state.word_select_target {
         app.editor.select_word_at(word_offset);
+        app.last_typing_time = std::time::Instant::now();
     }
     app.last_caret_pos = ptr_state.next_caret_pos;
 

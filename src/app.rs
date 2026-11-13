@@ -23,7 +23,7 @@ pub enum ConfirmAction {
 
 pub struct MyWordApp {
     pub editor: EditorState,
-    pub start_time: Instant,
+    pub last_typing_time: Instant,
     pub last_frame_time: Instant,
     pub fps: f32,
     pub zoom: f32,
@@ -58,7 +58,7 @@ impl Default for MyWordApp {
         let has_saved = has_autosave();
         Self {
             editor: EditorState::default(),
-            start_time: Instant::now(),
+            last_typing_time: Instant::now(),
             last_frame_time: Instant::now(),
             fps: 60.0,
             zoom: 1.0,
@@ -441,15 +441,19 @@ impl MyWordApp {
 
             match event {
                 egui::Event::Text(t) => {
+                    self.editor.ime_preedit = None;
+                    self.last_typing_time = Instant::now();
                     self.editor.handle_text_input(&t, !is_recent_backspace);
                     self.scroll_to_caret = true;
                 }
                 egui::Event::Copy => self.copy_selection_to_clipboard(ctx),
                 egui::Event::Cut => {
+                    self.last_typing_time = Instant::now();
                     self.cut_selection_to_clipboard(ctx);
                     self.scroll_to_caret = true;
                 }
                 egui::Event::Paste(pasted) => {
+                    self.last_typing_time = Instant::now();
                     let clean = pasted.replace("\r\n", "\n").replace('\r', "\n");
                     self.editor.clipboard_buffer = clean.clone();
                     self.editor.insert_text(&clean);
@@ -461,16 +465,19 @@ impl MyWordApp {
                     modifiers,
                     ..
                 } => {
+                    self.last_typing_time = Instant::now();
                     if self.editor.ime_preedit.is_none() {
                         self.handle_key_event(key, modifiers);
                     }
                 }
                 egui::Event::Ime(ime_event) => match ime_event {
                     egui::ImeEvent::Preedit(text) => {
+                        self.last_typing_time = Instant::now();
                         self.editor.ime_preedit = if text.is_empty() { None } else { Some(text) };
                         self.scroll_to_caret = true;
                     }
                     egui::ImeEvent::Commit(text) => {
+                        self.last_typing_time = Instant::now();
                         self.editor.ime_preedit = None;
                         self.editor.insert_text(&text);
                         self.scroll_to_caret = true;
@@ -604,7 +611,7 @@ impl eframe::App for MyWordApp {
             char_count,
         );
 
-        let elapsed_ms = self.start_time.elapsed().as_millis() as u64;
+        let elapsed_ms = self.last_typing_time.elapsed().as_millis() as u64;
         let show_caret = (elapsed_ms / 550).is_multiple_of(2);
         let ime_output_rect = render_page_canvas(ctx, self, &theme, total_pages, show_caret);
 
@@ -645,5 +652,23 @@ mod tests {
         app.trigger_new_document();
         assert_eq!(app.pending_confirm, None);
         assert!(app.editor.content.is_empty());
+    }
+
+    #[test]
+    fn test_typing_resets_last_typing_time_and_clears_ime_preedit() {
+        let mut app = MyWordApp::default();
+        app.editor.ime_preedit = Some("tam".to_string());
+        let before = Instant::now() - Duration::from_secs(5);
+        app.last_typing_time = before;
+
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Text("t".to_string()));
+        });
+        app.process_events(&ctx, false);
+
+        assert!(app.editor.ime_preedit.is_none());
+        assert!(app.last_typing_time > before);
+        assert!(app.last_typing_time.elapsed().as_millis() < 550);
     }
 }
