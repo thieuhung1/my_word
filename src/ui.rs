@@ -843,25 +843,34 @@ pub fn render_page_canvas(
                                     let c_h = local_rect.height().max(base_line_height * 0.85);
 
                                     ptr_state.next_caret_pos = Some(Pos2::new(caret_x, caret_y));
+                                    // Nếu có preedit, IME candidate window hiện sau preedit
+                                    let ime_cursor_x =
+                                        if let Some(preedit) = &app.editor.ime_preedit {
+                                            let p_font =
+                                                font_id_for_style(&app.editor.active_style, zoom);
+                                            let pw = ctx.fonts(|f| {
+                                                f.layout_no_wrap(
+                                                    preedit.clone(),
+                                                    p_font,
+                                                    theme.primary_accent,
+                                                )
+                                                .size()
+                                                .x
+                                            });
+                                            caret_x + pw
+                                        } else {
+                                            caret_x
+                                        };
                                     ime_output_rect = Some((
                                         rect,
                                         Rect::from_min_size(
-                                            Pos2::new(caret_x, caret_y),
+                                            Pos2::new(ime_cursor_x, caret_y),
                                             Vec2::new(2.0, c_h),
                                         ),
                                     ));
 
-                                    if show_caret && selected_range.is_none() {
-                                        painter.line_segment(
-                                            [
-                                                Pos2::new(caret_x, caret_y + 1.0),
-                                                Pos2::new(caret_x, caret_y + c_h),
-                                            ],
-                                            Stroke::new(2.0_f32, theme.primary_accent),
-                                        );
-                                    }
-
                                     if let Some(preedit) = &app.editor.ime_preedit {
+                                        // Vẽ preedit TẠI vị trí con trỏ (không lùi ra trước)
                                         let p_font =
                                             font_id_for_style(&app.editor.active_style, zoom);
                                         let preedit_galley = painter.layout_no_wrap(
@@ -869,20 +878,39 @@ pub fn render_page_canvas(
                                             p_font,
                                             theme.primary_accent,
                                         );
+                                        let preedit_w = preedit_galley.size().x;
                                         painter.galley(
-                                            Pos2::new(caret_x + 2.0, caret_y),
-                                            preedit_galley.clone(),
+                                            Pos2::new(caret_x, caret_y),
+                                            preedit_galley,
                                             theme.primary_accent,
                                         );
+                                        // Gạch chân dưới preedit
                                         painter.line_segment(
                                             [
-                                                Pos2::new(caret_x + 2.0, caret_y + c_h),
-                                                Pos2::new(
-                                                    caret_x + 2.0 + preedit_galley.size().x,
-                                                    caret_y + c_h,
-                                                ),
+                                                Pos2::new(caret_x, caret_y + c_h),
+                                                Pos2::new(caret_x + preedit_w, caret_y + c_h),
                                             ],
                                             Stroke::new(1.5_f32, theme.primary_accent),
+                                        );
+                                        // Con trỏ nháy ở CUỐI preedit (bên phải)
+                                        if show_caret && selected_range.is_none() {
+                                            let after_x = caret_x + preedit_w;
+                                            painter.line_segment(
+                                                [
+                                                    Pos2::new(after_x, caret_y + 1.0),
+                                                    Pos2::new(after_x, caret_y + c_h),
+                                                ],
+                                                Stroke::new(2.0_f32, theme.primary_accent),
+                                            );
+                                        }
+                                    } else if show_caret && selected_range.is_none() {
+                                        // Không có preedit: con trỏ bình thường
+                                        painter.line_segment(
+                                            [
+                                                Pos2::new(caret_x, caret_y + 1.0),
+                                                Pos2::new(caret_x, caret_y + c_h),
+                                            ],
+                                            Stroke::new(2.0_f32, theme.primary_accent),
                                         );
                                     }
                                 }
