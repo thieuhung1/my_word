@@ -254,8 +254,9 @@ impl MyWordApp {
                 egui::Event::Copy => self.copy_selection_to_clipboard(ctx),
                 egui::Event::Cut => self.cut_selection_to_clipboard(ctx),
                 egui::Event::Paste(pasted) => {
-                    self.editor.clipboard_buffer = pasted.clone();
-                    self.editor.insert_text(&pasted);
+                    let clean = pasted.replace("\r\n", "\n").replace('\r', "\n");
+                    self.editor.clipboard_buffer = clean.clone();
+                    self.editor.insert_text(&clean);
                 }
                 egui::Event::Key {
                     key,

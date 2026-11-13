@@ -344,16 +344,17 @@ impl EditorState {
     }
 
     pub fn insert_text(&mut self, text: &str) {
+        let clean_text = text.replace("\r\n", "\n").replace('\r', "\n");
         let has_sel = self.selected_range().is_some();
         let break_group = has_sel
-            || text.len() > 4
-            || text
+            || clean_text.len() > 4
+            || clean_text
                 .chars()
                 .any(|c| c.is_whitespace() || c == PAGE_BREAK_CHAR);
         self.save_undo_typing(break_group);
         self.delete_selection();
 
-        let normalized: String = text.nfc().collect();
+        let normalized: String = clean_text.nfc().collect();
         let pos = self.caret_byte_offset;
 
         let new_breaks = normalized
