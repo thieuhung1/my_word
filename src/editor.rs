@@ -152,8 +152,7 @@ impl Default for EditorState {
 }
 
 impl EditorState {
-    /// Tạo tài liệu thử nghiệm sạch cho unit tests
-    #[cfg(test)]
+    /// Tạo tài liệu từ văn bản thuần túy
     pub fn from_plain_text(text: &str) -> Self {
         let normalized: String = text.nfc().collect();
         let caret = normalized.len();
@@ -217,13 +216,7 @@ impl EditorState {
         if self.content.is_empty() {
             return;
         }
-        let probe = self.caret_byte_offset.saturating_sub(1);
-        self.active_style = self
-            .spans
-            .iter()
-            .find(|s| s.start <= probe && probe < s.end)
-            .map(|s| s.style)
-            .unwrap_or_default();
+        self.active_style = crate::document::style_at_offset(&self.spans, self.caret_byte_offset);
     }
 
     /// Lưu ảnh chụp Undo (tối đa 50 bản để tiết kiệm RAM)

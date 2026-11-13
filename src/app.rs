@@ -24,6 +24,10 @@ pub enum ConfirmAction {
 pub const CARET_BLINK_MS: u64 = 550;
 pub const AUTOSAVE_INTERVAL_SECS: u64 = 20;
 pub const UNIKEY_BURST_WINDOW_MS: u64 = 45;
+pub const STATUS_MESSAGE_TIMEOUT_SECS: u64 = 5;
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 3.0;
+pub const ZOOM_STEP: f32 = 0.1;
 const DEFAULT_LINE_HEIGHT_PT: f32 = 22.0;
 
 pub struct MyWordApp {
@@ -54,6 +58,7 @@ pub struct MyWordApp {
     pub cached_matches: Vec<(usize, usize)>,
     pub pending_confirm: Option<ConfirmAction>,
     pub post_save_action: Option<ConfirmAction>,
+    pub pending_drop_path: Option<PathBuf>,
     pub show_recovery_banner: bool,
     pub last_external_backspace: Option<Instant>,
     pub scroll_to_caret: bool,
@@ -93,6 +98,7 @@ impl Default for MyWordApp {
             cached_matches: Vec::new(),
             pending_confirm: None,
             post_save_action: None,
+            pending_drop_path: None,
             show_recovery_banner: has_saved,
             last_external_backspace: None,
             scroll_to_caret: false,
@@ -103,6 +109,16 @@ impl Default for MyWordApp {
 impl MyWordApp {
     pub fn set_status(&mut self, msg: &str) {
         self.status_message = Some((msg.to_string(), Instant::now()));
+    }
+
+    pub fn set_zoom(&mut self, new_zoom: f32) {
+        let clamped = (new_zoom * 10.0).round() / 10.0;
+        let clamped = clamped.clamp(MIN_ZOOM, MAX_ZOOM);
+        if (self.zoom - clamped).abs() > f32::EPSILON {
+            self.zoom = clamped;
+            self.cached_layout = None;
+            self.set_status(&format!("Thu phóng: {:.0}%", self.zoom * 100.0));
+        }
     }
 
     pub fn copy_selection_to_clipboard(&mut self, ctx: &egui::Context) {
@@ -155,6 +171,7 @@ impl MyWordApp {
                 self.editor.sync_active_style_to_caret();
                 self.cached_layout = None;
                 self.show_recovery_banner = false;
+                self.scroll_to_caret = true;
                 self.set_status("Đã khôi phục phiên soạn thảo chưa lưu");
             }
             Err(e) => {
@@ -171,18 +188,13 @@ impl MyWordApp {
     }
 
     pub fn new_document(&mut self) {
-        self.editor.save_undo();
-        self.editor.content.clear();
-        self.editor.spans.clear();
-        self.editor.para_alignments.clear();
-        self.editor.caret_byte_offset = 0;
-        self.editor.selection_start = None;
+        self.editor = EditorState::from_plain_text("");
         self.current_file_path = None;
-        self.editor.is_dirty = false;
-        self.editor.mark_content_changed();
         self.cached_layout = None;
-        self.editor.ime_preedit = None;
+        self.cached_matches.clear();
         self.active_match_idx = 0;
+        self.scroll_to_caret = true;
+        clear_autosave();
         self.set_status("Tài liệu mới");
     }
 
@@ -206,7 +218,11 @@ impl MyWordApp {
 
     pub fn trigger_save(&mut self, ctx: egui::Context, force_save_as: bool) {
         if !force_save_as && let Some(path) = self.current_file_path.clone() {
-            self.write_to_path(&path);
+            if self.write_to_path(&path) {
+                self.execute_post_save_action(&ctx);
+            } else {
+                self.post_save_action = None;
+            }
             return;
         }
         if self.file_dialog_rx.is_none() {
@@ -214,7 +230,7 @@ impl MyWordApp {
         }
     }
 
-    pub fn write_to_path(&mut self, path: &Path) {
+    pub fn write_to_path(&mut self, path: &Path) -> bool {
         match write_document(path, &self.editor) {
             Ok(()) => {
                 self.current_file_path = Some(path.to_path_buf());
@@ -222,27 +238,50 @@ impl MyWordApp {
                 clear_autosave();
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tệp");
                 self.set_status(&format!("Đã lưu: {}", name));
+                true
             }
-            Err(e) => self.set_status(&format!("Lỗi lưu tệp: {}", e)),
+            Err(e) => {
+                self.set_status(&format!("Lỗi lưu tệp: {}", e));
+                false
+            }
+        }
+    }
+
+    fn execute_post_save_action(&mut self, ctx: &egui::Context) {
+        if let Some(action) = self.post_save_action.take() {
+            match action {
+                ConfirmAction::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                ConfirmAction::OpenNew => {
+                    if let Some(drop_path) = self.pending_drop_path.take() {
+                        self.load_from_path(&drop_path);
+                    } else {
+                        self.trigger_open_dialog(ctx.clone());
+                    }
+                }
+                ConfirmAction::NewDocument => {
+                    self.new_document();
+                }
+            }
         }
     }
 
     fn load_from_path(&mut self, path: &Path) {
         match load_document(path) {
             Ok((text, spans, aligns)) => {
-                self.editor.save_undo();
+                self.editor = EditorState::default();
                 self.editor.content = text;
                 self.editor.spans = spans;
                 self.editor.para_alignments = aligns;
-                self.editor.caret_byte_offset = 0;
-                self.editor.selection_start = None;
                 self.current_file_path = Some(path.to_path_buf());
                 self.editor.mark_content_changed();
                 self.editor.is_dirty = false;
                 self.editor.sync_active_style_to_caret();
                 self.cached_layout = None;
-                self.editor.ime_preedit = None;
+                self.cached_matches.clear();
                 self.active_match_idx = 0;
+                self.scroll_to_caret = true;
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tệp");
                 self.set_status(&format!("Đã mở: {}", name));
             }
@@ -270,19 +309,10 @@ impl MyWordApp {
                         match res {
                             FileDialogResult::Open(p) => self.load_from_path(&p),
                             FileDialogResult::Save(p) => {
-                                self.write_to_path(&p);
-                                if let Some(action) = self.post_save_action.take() {
-                                    match action {
-                                        ConfirmAction::Quit => {
-                                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                        }
-                                        ConfirmAction::OpenNew => {
-                                            self.trigger_open_dialog(ctx.clone());
-                                        }
-                                        ConfirmAction::NewDocument => {
-                                            self.new_document();
-                                        }
-                                    }
+                                if self.write_to_path(&p) {
+                                    self.execute_post_save_action(ctx);
+                                } else {
+                                    self.post_save_action = None;
                                 }
                             }
                         }
@@ -356,7 +386,48 @@ impl MyWordApp {
         }
     }
 
+    fn handle_dropped_files(&mut self, ctx: &egui::Context) {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        if let Some(file) = dropped.first()
+            && let Some(path) = &file.path
+        {
+            if self.editor.is_dirty {
+                self.pending_drop_path = Some(path.clone());
+                self.pending_confirm = Some(ConfirmAction::OpenNew);
+            } else {
+                self.load_from_path(path);
+            }
+        }
+    }
+
     fn process_events(&mut self, ctx: &egui::Context, ui_wants_kb: bool) {
+        // Nếu đang mở hộp thoại xác nhận, chỉ nhận phím Escape để đóng hộp thoại
+        if self.pending_confirm.is_some() {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.pending_confirm = None;
+                self.post_save_action = None;
+                self.pending_drop_path = None;
+            }
+            return;
+        }
+
+        // Hỗ trợ Ctrl + Cuộn chuột để Zoom
+        let scroll_delta = ctx.input(|i| {
+            if i.modifiers.command {
+                i.smooth_scroll_delta.y
+            } else {
+                0.0
+            }
+        });
+        if scroll_delta.abs() > 0.0 {
+            let step = if scroll_delta > 0.0 {
+                ZOOM_STEP
+            } else {
+                -ZOOM_STEP
+            };
+            self.set_zoom(self.zoom + step);
+        }
+
         let events = ctx.input(|i| i.events.clone());
 
         let mut saw_backspace_in_frame = false;
@@ -431,6 +502,33 @@ impl MyWordApp {
                     continue;
                 }
                 egui::Event::Key {
+                    key: egui::Key::Plus | egui::Key::Equals,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => {
+                    self.set_zoom(self.zoom + ZOOM_STEP);
+                    continue;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Minus,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => {
+                    self.set_zoom(self.zoom - ZOOM_STEP);
+                    continue;
+                }
+                egui::Event::Key {
+                    key: egui::Key::Num0,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => {
+                    self.set_zoom(1.0);
+                    continue;
+                }
+                egui::Event::Key {
                     key: egui::Key::Escape,
                     pressed: true,
                     ..
@@ -472,7 +570,6 @@ impl MyWordApp {
                     modifiers,
                     ..
                 } => {
-                    self.last_typing_time = Instant::now();
                     if self.editor.ime_preedit.is_none() {
                         self.handle_key_event(key, modifiers);
                     }
@@ -497,7 +594,8 @@ impl MyWordApp {
     }
 
     fn handle_key_event(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
-        self.scroll_to_caret = true;
+        let mut did_navigate_or_edit = true;
+
         if modifiers.command {
             match key {
                 egui::Key::Z => {
@@ -522,6 +620,7 @@ impl MyWordApp {
                 egui::Key::A => {
                     self.editor.select_all();
                     self.set_status("Đã chọn toàn bộ văn bản");
+                    did_navigate_or_edit = false;
                 }
                 egui::Key::B => {
                     let next = !self.editor.active_style.bold;
@@ -553,7 +652,9 @@ impl MyWordApp {
                 egui::Key::End => {
                     self.editor.move_to_doc_boundary(true, modifiers.shift);
                 }
-                _ => {}
+                _ => {
+                    did_navigate_or_edit = false;
+                }
             }
         } else {
             match key {
@@ -566,8 +667,16 @@ impl MyWordApp {
                 egui::Key::Home => self.move_to_line_boundary(false, modifiers.shift),
                 egui::Key::End => self.move_to_line_boundary(true, modifiers.shift),
                 egui::Key::Enter => self.editor.insert_text("\n"),
-                _ => {}
+                egui::Key::Tab => self.editor.insert_text("    "),
+                _ => {
+                    did_navigate_or_edit = false;
+                }
             }
+        }
+
+        if did_navigate_or_edit {
+            self.last_typing_time = Instant::now();
+            self.scroll_to_caret = true;
         }
     }
 }
@@ -582,11 +691,19 @@ impl eframe::App for MyWordApp {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame_time).as_secs_f32();
         self.last_frame_time = now;
-        if dt > 0.0 {
+        if dt > 0.0 && dt < 1.0 {
             self.fps = self.fps * 0.9 + (1.0 / dt) * 0.1;
         }
+
+        if let Some((_, time)) = &self.status_message
+            && time.elapsed() >= Duration::from_secs(STATUS_MESSAGE_TIMEOUT_SECS)
+        {
+            self.status_message = None;
+        }
+
         self.maybe_autosave();
         self.poll_file_dialog(ctx);
+        self.handle_dropped_files(ctx);
 
         let ui_wants_kb = ctx.wants_keyboard_input();
         self.process_events(ctx, ui_wants_kb);
@@ -622,7 +739,10 @@ impl eframe::App for MyWordApp {
         let show_caret = (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2);
         let ime_output_rect = render_page_canvas(ctx, self, &theme, total_pages, show_caret);
 
-        if !ui_wants_kb && let Some((area_rect, cursor_rect)) = ime_output_rect {
+        if !ui_wants_kb
+            && self.pending_confirm.is_none()
+            && let Some((area_rect, cursor_rect)) = ime_output_rect
+        {
             ctx.output_mut(|o| {
                 o.ime = Some(egui::output::IMEOutput {
                     rect: area_rect,

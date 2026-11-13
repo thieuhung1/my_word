@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::Path;
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
@@ -6,8 +7,9 @@ use unicode_segmentation::UnicodeSegmentation;
 pub const PAGE_BREAK_CHAR: char = '\x0c';
 
 /// Kiểu căn lề đoạn văn bản
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum TextAlignment {
+    #[default]
     Left,
     Center,
     Right,
@@ -15,7 +17,7 @@ pub enum TextAlignment {
 }
 
 impl TextAlignment {
-    fn to_code(self) -> &'static str {
+    pub fn to_code(self) -> &'static str {
         match self {
             TextAlignment::Left => "L",
             TextAlignment::Center => "C",
@@ -24,7 +26,7 @@ impl TextAlignment {
         }
     }
 
-    fn from_code(s: &str) -> Self {
+    pub fn from_code(s: &str) -> Self {
         match s {
             "C" => TextAlignment::Center,
             "R" => TextAlignment::Right,
@@ -87,7 +89,7 @@ impl Default for TextStyle {
 }
 
 /// Một dải byte [start..end) mang cùng kiểu định dạng
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct StyleSpan {
     pub start: usize,
     pub end: usize,
@@ -103,17 +105,20 @@ pub struct DocumentSnapshot {
     pub para_alignments: Vec<TextAlignment>,
 }
 
-/// Chuẩn hóa danh sách spans: loại rỗng, sắp xếp, gộp các span kề nhau cùng style
+/// Chuẩn hóa danh sách spans: loại rỗng, sắp xếp, gộp các span kề nhau hoặc chồng lấn cùng style
 pub fn normalize_spans(spans: &mut Vec<StyleSpan>) {
     spans.retain(|s| s.start < s.end);
+    if spans.is_empty() {
+        return;
+    }
     spans.sort_by_key(|s| (s.start, s.end));
     let mut merged: Vec<StyleSpan> = Vec::with_capacity(spans.len());
     for span in spans.drain(..) {
         if let Some(last) = merged.last_mut()
-            && last.end == span.start
+            && last.end >= span.start
             && last.style == span.style
         {
-            last.end = span.end;
+            last.end = last.end.max(span.end);
             continue;
         }
         merged.push(span);
@@ -121,14 +126,27 @@ pub fn normalize_spans(spans: &mut Vec<StyleSpan>) {
     *spans = merged;
 }
 
-/// Ghi đè kiểu dáng lên dải [from..to) trong danh sách spans liên tiếp
+/// Ghi đè kiểu dáng lên dải [from..to) trong danh sách spans đã được sắp xếp tăng dần.
+/// Duy trì thứ tự sắp xếp mà không cần gọi `sort_by_key`.
 fn overwrite_span_range(spans: &mut Vec<StyleSpan>, from: usize, to: usize, style: TextStyle) {
     if from >= to {
         return;
     }
     let mut next = Vec::with_capacity(spans.len() + 2);
+    let mut inserted = false;
+
     for s in spans.drain(..) {
-        if s.end <= from || s.start >= to {
+        if s.end <= from {
+            next.push(s);
+        } else if s.start >= to {
+            if !inserted {
+                next.push(StyleSpan {
+                    start: from,
+                    end: to,
+                    style,
+                });
+                inserted = true;
+            }
             next.push(s);
         } else {
             if s.start < from {
@@ -137,6 +155,14 @@ fn overwrite_span_range(spans: &mut Vec<StyleSpan>, from: usize, to: usize, styl
                     end: from,
                     style: s.style,
                 });
+            }
+            if !inserted {
+                next.push(StyleSpan {
+                    start: from,
+                    end: to,
+                    style,
+                });
+                inserted = true;
             }
             if s.end > to {
                 next.push(StyleSpan {
@@ -147,12 +173,15 @@ fn overwrite_span_range(spans: &mut Vec<StyleSpan>, from: usize, to: usize, styl
             }
         }
     }
-    next.push(StyleSpan {
-        start: from,
-        end: to,
-        style,
-    });
-    next.sort_by_key(|s| s.start);
+
+    if !inserted {
+        next.push(StyleSpan {
+            start: from,
+            end: to,
+            style,
+        });
+    }
+
     *spans = next;
 }
 
@@ -163,12 +192,43 @@ pub fn ensure_full_coverage(spans: &mut Vec<StyleSpan>, total_len: usize, fallba
         spans.clear();
         return;
     }
+
     // Lọc các span hợp lệ trong phạm vi [0..total_len)
     spans.retain(|s| s.start < s.end && s.start < total_len);
     for s in spans.iter_mut() {
         s.end = s.end.min(total_len);
     }
 
+    // Fast-path O(N): Kiểm tra nếu các span đã tăng dần và không chồng lấn nhau
+    let is_disjoint_sorted = spans.windows(2).all(|w| w[0].end <= w[1].start);
+
+    if is_disjoint_sorted {
+        let mut coverage = Vec::with_capacity(spans.len() + 2);
+        let mut cursor = 0;
+        for s in spans.drain(..) {
+            if s.start > cursor {
+                coverage.push(StyleSpan {
+                    start: cursor,
+                    end: s.start,
+                    style: fallback,
+                });
+            }
+            cursor = s.end;
+            coverage.push(s);
+        }
+        if cursor < total_len {
+            coverage.push(StyleSpan {
+                start: cursor,
+                end: total_len,
+                style: fallback,
+            });
+        }
+        normalize_spans(&mut coverage);
+        *spans = coverage;
+        return;
+    }
+
+    // Slow-path cho trường hợp các span bị chồng lấn (Last-Write-Wins)
     let mut coverage = vec![StyleSpan {
         start: 0,
         end: total_len,
@@ -183,16 +243,40 @@ pub fn ensure_full_coverage(spans: &mut Vec<StyleSpan>, total_len: usize, fallba
     *spans = coverage;
 }
 
+/// Truy vấn nhanh TextStyle tại một vị trí byte cụ thể (Binary Search O(log N))
+pub fn style_at_offset(spans: &[StyleSpan], byte_offset: usize) -> TextStyle {
+    if spans.is_empty() {
+        return TextStyle::default();
+    }
+    // Khi gõ chữ ở vị trí biên (caret > 0), ưu tiên lấy style của ký tự ngay trước con trỏ
+    let idx = spans.partition_point(|s| s.end <= byte_offset.saturating_sub(1));
+    spans
+        .get(idx)
+        .or_else(|| spans.last())
+        .map(|s| s.style)
+        .unwrap_or_default()
+}
+
 /// Cập nhật spans khi chèn đoạn dài `len` bytes tại `pos`
 pub fn shift_spans_on_insert(spans: &mut Vec<StyleSpan>, pos: usize, len: usize, style: TextStyle) {
     if len == 0 {
         return;
     }
     let mut next = Vec::with_capacity(spans.len() + 2);
+    let mut inserted = false;
+
     for s in spans.drain(..) {
         if s.end <= pos {
             next.push(s);
         } else if s.start >= pos {
+            if !inserted {
+                next.push(StyleSpan {
+                    start: pos,
+                    end: pos + len,
+                    style,
+                });
+                inserted = true;
+            }
             next.push(StyleSpan {
                 start: s.start + len,
                 end: s.end + len,
@@ -206,17 +290,27 @@ pub fn shift_spans_on_insert(spans: &mut Vec<StyleSpan>, pos: usize, len: usize,
                 style: s.style,
             });
             next.push(StyleSpan {
+                start: pos,
+                end: pos + len,
+                style,
+            });
+            inserted = true;
+            next.push(StyleSpan {
                 start: pos + len,
                 end: s.end + len,
                 style: s.style,
             });
         }
     }
-    next.push(StyleSpan {
-        start: pos,
-        end: pos + len,
-        style,
-    });
+
+    if !inserted {
+        next.push(StyleSpan {
+            start: pos,
+            end: pos + len,
+            style,
+        });
+    }
+
     *spans = next;
     normalize_spans(spans);
 }
@@ -310,7 +404,8 @@ pub fn apply_style_on_range<F>(
     normalize_spans(spans);
 }
 
-/// Lấy danh sách các span cắt đúng trong phạm vi đoạn `[para_start..para_end)` (quy đổi sang local offset)
+/// Lấy danh sách các span cắt đúng trong phạm vi đoạn `[para_start..para_end)` (quy đổi sang local offset).
+/// Sử dụng Binary Search `partition_point` để đạt tốc độ O(log N + K) với K là số span trong đoạn.
 pub fn spans_for_slice(
     spans: &[StyleSpan],
     para_start: usize,
@@ -320,10 +415,16 @@ pub fn spans_for_slice(
     if para_len == 0 {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(spans.len().clamp(1, 8));
+
+    let start_idx = spans.partition_point(|s| s.end <= para_start);
+    let mut out = Vec::with_capacity(4);
     let mut cursor = 0;
-    for s in spans {
-        if s.end <= para_start || s.start >= para_end {
+
+    for s in &spans[start_idx..] {
+        if s.start >= para_end {
+            break;
+        }
+        if s.end <= para_start {
             continue;
         }
         let local_s = s.start.saturating_sub(para_start);
@@ -348,15 +449,11 @@ pub fn find_matches(content: &str, query: &str, case_sensitive: bool) -> Vec<(us
     if query.is_empty() || content.is_empty() {
         return Vec::new();
     }
-    let query_norm: String = query.nfc().collect();
-    if query_norm.is_empty() {
-        return Vec::new();
-    }
 
     let query_chars: Vec<char> = if case_sensitive {
-        query_norm.chars().collect()
+        query.nfc().collect()
     } else {
-        query_norm.chars().flat_map(|c| c.to_lowercase()).collect()
+        query.nfc().flat_map(|c| c.to_lowercase()).collect()
     };
     if query_chars.is_empty() {
         return Vec::new();
@@ -371,8 +468,7 @@ pub fn find_matches(content: &str, query: &str, case_sensitive: bool) -> Vec<(us
 
     for (g_start, g_str) in content.grapheme_indices(true) {
         let g_end = g_start + g_str.len();
-        let nfc_str: String = g_str.nfc().collect();
-        for ch in nfc_str.chars() {
+        for ch in g_str.nfc() {
             if case_sensitive {
                 norm_chars.push(ch);
                 orig_starts.push(g_start);
@@ -413,46 +509,33 @@ pub fn find_matches(content: &str, query: &str, case_sensitive: bool) -> Vec<(us
     results
 }
 
-/// Chuẩn hóa chuỗi xuống dòng thành `\n` và đồng bộ lại byte offsets cho danh sách spans
-fn normalize_newlines_and_spans(content: &str, spans: &[StyleSpan]) -> (String, Vec<StyleSpan>) {
-    let mut clean = String::with_capacity(content.len());
-    let mut map = Vec::with_capacity(content.len() + 1);
-    let mut chars = content.char_indices().peekable();
-    let mut cur_old = 0;
+/// Chuẩn hóa chuỗi đầu vào: chuyển `\r\n` và `\r` thành `\n`, đồng thời chuẩn hóa NFC cho từng grapheme.
+/// Trả về `(chuỗi_đã_chuẩn_hóa, bảng_ánh_xạ_byte_cũ_sang_byte_mới)` có độ dài `raw.len() + 1`.
+fn normalize_text_and_build_byte_map(raw: &str) -> (String, Vec<usize>) {
+    let mut clean = String::with_capacity(raw.len());
+    let mut byte_map = vec![0usize; raw.len() + 1];
 
-    while let Some((old_idx, ch)) = chars.next() {
-        while cur_old < old_idx {
-            map.push(clean.len());
-            cur_old += 1;
-        }
-        if ch == '\r' {
-            if let Some(&(_, next_ch)) = chars.peek()
-                && next_ch == '\n'
-            {
-                chars.next();
-                map.push(clean.len());
-                cur_old += 1;
-                clean.push('\n');
-                map.push(clean.len());
-                cur_old += 1;
-                continue;
-            }
-            map.push(clean.len());
-            cur_old += 1;
+    for (g_start, g_str) in raw.grapheme_indices(true) {
+        let new_start = clean.len();
+        if g_str == "\r\n" || g_str == "\r" {
             clean.push('\n');
         } else {
-            for _ in 0..ch.len_utf8() {
-                map.push(clean.len());
-                cur_old += 1;
-            }
-            clean.push(ch);
+            clean.extend(g_str.nfc());
         }
-    }
-    while cur_old <= content.len() {
-        map.push(clean.len());
-        cur_old += 1;
+        let new_end = clean.len();
+        let g_len = g_str.len();
+
+        // Mọi byte bên trong grapheme cũ đều ánh xạ về đầu grapheme mới
+        byte_map[g_start..(g_start + g_len)].fill(new_start);
+        byte_map[g_start + g_len] = new_end;
     }
 
+    (clean, byte_map)
+}
+
+/// Chuẩn hóa chuỗi xuống dòng thành `\n` và đồng bộ lại byte offsets cho danh sách spans
+fn normalize_newlines_and_spans(content: &str, spans: &[StyleSpan]) -> (String, Vec<StyleSpan>) {
+    let (clean, map) = normalize_text_and_build_byte_map(content);
     let mut mapped_spans = Vec::with_capacity(spans.len());
     for s in spans {
         let new_start = *map.get(s.start).unwrap_or(&clean.len());
@@ -470,26 +553,22 @@ fn normalize_newlines_and_spans(content: &str, spans: &[StyleSpan]) -> (String, 
 
 /// Tuần tự hóa tài liệu Rich Text sang định dạng `.mwd` (không cần thư viện ngoài)
 pub fn serialize_mwd(content: &str, spans: &[StyleSpan], aligns: &[TextAlignment]) -> String {
-    // Luôn chuẩn hóa xuống dòng về '\n' và ánh xạ lại spans để ngăn lỗi lệch byte khi gặp CRLF
-    let (clean_content, clean_spans) = if content.contains('\r') {
-        normalize_newlines_and_spans(content, spans)
-    } else {
-        (content.to_string(), spans.to_vec())
-    };
+    let (clean_content, clean_spans) = normalize_newlines_and_spans(content, spans);
 
-    let mut out = String::from("MYWORD_V1\n");
-    let align_codes: Vec<&str> = aligns.iter().map(|a| a.to_code()).collect();
-    out.push_str("ALIGN=");
-    out.push_str(&align_codes.join(","));
+    let mut out = String::with_capacity(clean_content.len() + clean_spans.len() * 48 + 128);
+    out.push_str("MYWORD_V1\nALIGN=");
+    for (idx, a) in aligns.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(a.to_code());
+    }
     out.push('\n');
 
     for s in &clean_spans {
-        let hl = match s.style.highlight {
-            Some([r, g, b]) => format!("{},{},{}", r, g, b),
-            None => "none".to_string(),
-        };
-        out.push_str(&format!(
-            "SPAN={}..{}|B:{}|I:{}|U:{}|S:{}|SZ:{:.1}|C:{},{},{}|H:{}\n",
+        let _ = write!(
+            out,
+            "SPAN={}..{}|B:{}|I:{}|U:{}|S:{}|SZ:{:.1}|C:{},{},{}|H:",
             s.start,
             s.end,
             u8::from(s.style.bold),
@@ -500,8 +579,15 @@ pub fn serialize_mwd(content: &str, spans: &[StyleSpan], aligns: &[TextAlignment
             s.style.color[0],
             s.style.color[1],
             s.style.color[2],
-            hl
-        ));
+        );
+        match s.style.highlight {
+            Some([r, g, b]) => {
+                let _ = writeln!(out, "{},{},{}", r, g, b);
+            }
+            None => {
+                out.push_str("none\n");
+            }
+        }
     }
     out.push_str("---CONTENT---\n");
     out.push_str(&clean_content);
@@ -510,6 +596,39 @@ pub fn serialize_mwd(content: &str, spans: &[StyleSpan], aligns: &[TextAlignment
 
 const MAX_DESERIALIZE_SPANS: usize = 100_000;
 const MAX_DESERIALIZE_ALIGNS: usize = 50_000;
+
+/// Tách phần Header và phần Content gốc từ chuỗi raw của file `.mwd`
+fn split_mwd_header_and_content(raw: &str) -> Option<(&str, &str)> {
+    let mut search_from = 0;
+    const MARKER: &str = "---CONTENT---";
+
+    while let Some(rel_pos) = raw[search_from..].find(MARKER) {
+        let pos = search_from + rel_pos;
+        let valid_before = pos == 0 || matches!(raw.as_bytes()[pos - 1], b'\n' | b'\r');
+        let after_idx = pos + MARKER.len();
+
+        if valid_before {
+            let after_str = &raw[after_idx..];
+            let content_raw = after_str
+                .strip_prefix("\r\n")
+                .or_else(|| after_str.strip_prefix('\n'))
+                .or_else(|| after_str.strip_prefix('\r'));
+
+            if let Some(content) = content_raw {
+                let mut header_end = pos;
+                if header_end > 0 && raw.as_bytes()[header_end - 1] == b'\n' {
+                    header_end -= 1;
+                }
+                if header_end > 0 && raw.as_bytes()[header_end - 1] == b'\r' {
+                    header_end -= 1;
+                }
+                return Some((&raw[..header_end], content));
+            }
+        }
+        search_from = after_idx;
+    }
+    None
+}
 
 /// Giải mã tệp `.mwd` hoặc `.txt`/`.md` thường
 pub fn deserialize_document(
@@ -522,23 +641,17 @@ pub fn deserialize_document(
         .map(|e| e.eq_ignore_ascii_case("mwd"))
         .unwrap_or(false);
 
-    let has_marker = raw.contains("\n---CONTENT---\n")
-        || raw.contains("\r\n---CONTENT---\r\n")
-        || raw.contains("\r---CONTENT---\r");
-
     let starts_with_mwd = raw.starts_with("MYWORD_V1\n")
         || raw.starts_with("MYWORD_V1\r\n")
         || raw.starts_with("MYWORD_V1\r");
 
+    let split_parts = split_mwd_header_and_content(raw);
+
     // Chỉ nhận diện là file .mwd nếu có phần mở rộng .mwd HOẶC (bắt đầu bằng MYWORD_V1 VÀ có marker ---CONTENT---)
-    let is_mwd = has_mwd_ext || (starts_with_mwd && has_marker);
+    let is_mwd = has_mwd_ext || (starts_with_mwd && split_parts.is_some());
 
     if !is_mwd {
-        let text: String = raw
-            .replace("\r\n", "\n")
-            .replace('\r', "\n")
-            .nfc()
-            .collect();
+        let (text, _) = normalize_text_and_build_byte_map(raw);
         let len = text.len();
         let spans = if len > 0 {
             vec![StyleSpan {
@@ -553,39 +666,22 @@ pub fn deserialize_document(
         return (text, spans, vec![TextAlignment::Left; para_count]);
     }
 
-    let normalized_raw = raw.replace("\r\n", "\n").replace('\r', "\n");
-    let marker = "\n---CONTENT---\n";
-    let Some(split_idx) = normalized_raw.find(marker) else {
-        let text: String = normalized_raw.nfc().collect();
-        return (text, Vec::new(), vec![TextAlignment::Left]);
+    let Some((header_raw, content_raw)) = split_parts else {
+        let (text, _) = normalize_text_and_build_byte_map(raw);
+        let para_count = text.split(['\n', PAGE_BREAK_CHAR]).count().max(1);
+        return (text, Vec::new(), vec![TextAlignment::Left; para_count]);
     };
 
-    let header = &normalized_raw[..split_idx];
-    let content: String = normalized_raw[split_idx + marker.len()..].nfc().collect();
-
-    // Kiểm tra xem raw content gốc có chứa \r hay không để sẵn sàng cứu các span bị lưu lệch theo CRLF
-    let raw_content_had_cr = if let Some(m_idx) = raw.find("---CONTENT---") {
-        let after_marker = &raw[m_idx + "---CONTENT---".len()..];
-        let after_nl = if let Some(stripped) = after_marker.strip_prefix("\r\n") {
-            stripped
-        } else if let Some(stripped) = after_marker
-            .strip_prefix('\n')
-            .or_else(|| after_marker.strip_prefix('\r'))
-        {
-            stripped
-        } else {
-            after_marker
-        };
-        after_nl.contains('\r')
-    } else {
-        false
-    };
+    // Chuẩn hóa content_raw (cả CRLF lẫn NFC) và lấy bảng ánh xạ byte O(1)
+    let (content, byte_map) = normalize_text_and_build_byte_map(content_raw);
+    let content_was_modified = content.len() != content_raw.len() || content != content_raw;
 
     let para_count = content.split(['\n', PAGE_BREAK_CHAR]).count().max(1);
     let mut aligns = Vec::new();
     let mut spans = Vec::new();
 
-    for line in header.lines() {
+    for line in header_raw.lines() {
+        let line = line.trim_end_matches('\r');
         if let Some(rest) = line.strip_prefix("ALIGN=") {
             for code in rest.split(',') {
                 if !code.is_empty() && aligns.len() < para_count.min(MAX_DESERIALIZE_ALIGNS) {
@@ -594,7 +690,7 @@ pub fn deserialize_document(
             }
         } else if let Some(rest) = line.strip_prefix("SPAN=")
             && spans.len() < MAX_DESERIALIZE_SPANS
-            && let Some(span) = parse_span_line(rest, &content, raw_content_had_cr, raw)
+            && let Some(span) = parse_span_line(rest, &content, content_was_modified, &byte_map)
         {
             spans.push(span);
         }
@@ -612,8 +708,8 @@ pub fn deserialize_document(
 fn parse_span_line(
     s: &str,
     content: &str,
-    raw_content_had_cr: bool,
-    raw: &str,
+    content_was_modified: bool,
+    byte_map: &[usize],
 ) -> Option<StyleSpan> {
     let mut parts = s.split('|');
     let range_str = parts.next()?;
@@ -621,45 +717,17 @@ fn parse_span_line(
     let mut start: usize = a.parse().ok()?;
     let mut end: usize = b.parse().ok()?;
 
-    // Nếu start/end không hợp lệ trên content đã chuẩn hóa, nhưng raw content có chứa \r:
-    // Thử dịch chuyển bù trừ các ký tự '\r' bị xóa trước vị trí byte đó.
-    if (start >= end
-        || end > content.len()
-        || !content.is_char_boundary(start)
-        || !content.is_char_boundary(end))
-        && raw_content_had_cr
-        && let Some(m_idx) = raw.find("---CONTENT---")
-    {
-        let after_marker = &raw[m_idx + "---CONTENT---".len()..];
-        let raw_content = if let Some(stripped) = after_marker.strip_prefix("\r\n") {
-            stripped
-        } else if let Some(stripped) = after_marker
-            .strip_prefix('\n')
-            .or_else(|| after_marker.strip_prefix('\r'))
+    // Nếu content_raw ban đầu có chứa \r hoặc ký tự tổ hợp NFD, dùng byte_map để quy đổi chính xác sang vị trí mới
+    if content_was_modified && end < byte_map.len() && start < end {
+        let mapped_start = byte_map[start];
+        let mapped_end = byte_map[end];
+        if mapped_start < mapped_end
+            && mapped_end <= content.len()
+            && content.is_char_boundary(mapped_start)
+            && content.is_char_boundary(mapped_end)
         {
-            stripped
-        } else {
-            after_marker
-        };
-        if end <= raw_content.len() {
-            let start_cr = raw_content[..start.min(raw_content.len())]
-                .chars()
-                .filter(|&c| c == '\r')
-                .count();
-            let end_cr = raw_content[..end.min(raw_content.len())]
-                .chars()
-                .filter(|&c| c == '\r')
-                .count();
-            let adj_start = start.saturating_sub(start_cr);
-            let adj_end = end.saturating_sub(end_cr);
-            if adj_start < adj_end
-                && adj_end <= content.len()
-                && content.is_char_boundary(adj_start)
-                && content.is_char_boundary(adj_end)
-            {
-                start = adj_start;
-                end = adj_end;
-            }
+            start = mapped_start;
+            end = mapped_end;
         }
     }
 
@@ -695,36 +763,33 @@ fn parse_span_line(
             style.strikethrough = v == "1";
         } else if let Some(v) = part.strip_prefix("SZ:") {
             let sz: f32 = v.parse().ok()?;
-            if !sz.is_finite() || sz < 1.0 || sz > 500.0 {
+            if !sz.is_finite() || !(1.0..=500.0).contains(&sz) {
                 return None;
             }
             style.font_size = sz.clamp(8.0, 72.0);
         } else if let Some(v) = part.strip_prefix("C:") {
-            let rgb_parts: Vec<&str> = v.split(',').collect();
-            if rgb_parts.len() != 3 {
-                return None;
-            }
-            let r: u8 = rgb_parts[0].parse().ok()?;
-            let g: u8 = rgb_parts[1].parse().ok()?;
-            let b: u8 = rgb_parts[2].parse().ok()?;
-            style.color = [r, g, b];
+            style.color = parse_rgb(v)?;
         } else if let Some(v) = part.strip_prefix("H:") {
             if v == "none" {
                 style.highlight = None;
             } else {
-                let rgb_parts: Vec<&str> = v.split(',').collect();
-                if rgb_parts.len() != 3 {
-                    return None;
-                }
-                let r: u8 = rgb_parts[0].parse().ok()?;
-                let g: u8 = rgb_parts[1].parse().ok()?;
-                let b: u8 = rgb_parts[2].parse().ok()?;
-                style.highlight = Some([r, g, b]);
+                style.highlight = Some(parse_rgb(v)?);
             }
         }
     }
 
     Some(StyleSpan { start, end, style })
+}
+
+fn parse_rgb(v: &str) -> Option<[u8; 3]> {
+    let mut it = v.split(',');
+    let r: u8 = it.next()?.parse().ok()?;
+    let g: u8 = it.next()?.parse().ok()?;
+    let b: u8 = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some([r, g, b])
 }
 
 #[cfg(test)]
@@ -751,7 +816,7 @@ mod tests {
         assert_eq!(&content[spans[1].start..spans[1].end], "Việt");
         assert!(!spans[2].style.bold);
 
-        // Chèn thêm " Xã hội" vào trước "Việt"
+        // Chèn thêm "Xã hội " vào trước "Việt"
         let ins = "Xã hội ";
         content.insert_str(v_start, ins);
         shift_spans_on_insert(&mut spans, v_start, ins.len(), TextStyle::default());
@@ -800,7 +865,6 @@ mod tests {
 
     #[test]
     fn test_deserialize_mwd_rejects_non_char_boundary_and_nan_size() {
-        // "Tiếng" có 'ế' tại bytes 2..5 -> byte 3 nằm giữa ký tự UTF-8; SZ:NaN phải bị bỏ qua
         let crafted =
             "MYWORD_V1\nALIGN=L\nSPAN=1..3|B:1|SZ:NaN\nSPAN=0..7|B:0|SZ:16.0\n---CONTENT---\nTiếng";
         let (content, spans, _) = deserialize_document(crafted, Path::new("crafted.mwd"));
@@ -818,7 +882,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mwd_crlf_roundtrip_preserves_spans_and_aligns() {
+    fn test_mwd_crlf_and_nfd_roundtrip_preserves_spans_and_aligns() {
         let content_crlf = "Dòng 1: Tiêu đề\r\nDòng 2: Nội dung tiếng Việt\rDòng 3: Kết luận";
         let l1_end = "Dòng 1: Tiêu đề".len();
         let l2_start = content_crlf.find("Dòng 2").unwrap();
@@ -859,18 +923,15 @@ mod tests {
         ];
 
         let serialized = serialize_mwd(content_crlf, &spans, &aligns);
-        // Kiểm tra rằng serialized không chứa '\r'
         assert!(!serialized.contains("\r\n") && !serialized.contains('\r'));
 
         let (out_content, out_spans, out_aligns) =
             deserialize_document(&serialized, Path::new("crlf.mwd"));
 
-        // Content đã được chuẩn hóa về '\n'
         assert!(!out_content.contains('\r'));
         assert_eq!(out_aligns.len(), 3);
         assert_eq!(out_aligns, aligns);
 
-        // Các span vẫn bám đúng theo nội dung
         let bold_span = out_spans.iter().find(|s| s.style.bold).unwrap();
         assert_eq!(
             &out_content[bold_span.start..bold_span.end],
@@ -891,22 +952,35 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_raw_nfd_mwd_maps_spans_accurately() {
+        // Giả lập một file .mwd có nội dung bị lưu ở dạng tổ hợp NFD
+        let raw_nfd: String = "Tiếng Việt".nfd().collect();
+        let tieng_nfd: String = "Tiếng".nfd().collect();
+        let raw_file = format!(
+            "MYWORD_V1\nALIGN=L\nSPAN=0..{}|B:1\n---CONTENT---\n{}",
+            tieng_nfd.len(),
+            raw_nfd
+        );
+
+        let (content, spans, _) = deserialize_document(&raw_file, Path::new("nfd.mwd"));
+        assert_eq!(content, "Tiếng Việt");
+        let bold_span = spans.iter().find(|s| s.style.bold).unwrap();
+        assert_eq!(&content[bold_span.start..bold_span.end], "Tiếng");
+    }
+
+    #[test]
     fn test_find_matches_nfd_vietnamese() {
-        // NFD tự sinh từ chuỗi gốc
         let orig = "Học tiếng Việt rất hay. Tiếng Việt giàu đẹp.";
         let nfd_content: String = orig.nfd().collect();
-        assert_ne!(nfd_content, orig); // Đảm bảo thực sự là NFD (chứa các combining marks)
+        assert_ne!(nfd_content, orig);
 
-        // Query chuẩn NFC: "tiếng"
         let matches = find_matches(&nfd_content, "tiếng", true);
         assert_eq!(matches.len(), 1);
         let (s, e) = matches[0];
-        // Cắt lát &nfd_content[s..e] phải không bị panic và khi chuẩn hóa NFC phải đúng là "tiếng"
         let matched_slice = &nfd_content[s..e];
         let matched_nfc: String = matched_slice.nfc().collect();
         assert_eq!(matched_nfc, "tiếng");
 
-        // Không phân biệt hoa/thường: tìm "TIẾNG VIỆT"
         let ci_matches = find_matches(&nfd_content, "TIẾNG VIỆT", false);
         assert_eq!(ci_matches.len(), 2);
         let m0_nfc: String = nfd_content[ci_matches[0].0..ci_matches[0].1]
@@ -921,16 +995,13 @@ mod tests {
 
     #[test]
     fn test_deserialize_mwd_rejects_corrupted_colors_and_plain_text() {
-        // Plain text file vô tình có dòng đầu là MYWORD_V1 nhưng không có marker ---CONTENT---
         let plain_txt = "MYWORD_V1\nĐây là hướng dẫn sử dụng phần mềm.";
         let (text, _, _) = deserialize_document(plain_txt, Path::new("guide.txt"));
         assert_eq!(text, "MYWORD_V1\nĐây là hướng dẫn sử dụng phần mềm.");
 
-        // Màu hỏng: thiếu kênh Blue C:255,0 hoặc tràn u8 C:999,0,0
         let corrupted_color =
             "MYWORD_V1\nALIGN=L\nSPAN=0..4|C:255,0\nSPAN=0..4|C:999,0,0\n---CONTENT---\ntest";
         let (_, spans, _) = deserialize_document(corrupted_color, Path::new("corrupted.mwd"));
-        // Cả 2 span hỏng đều bị loại bỏ, fallback về màu mặc định
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.color, TextStyle::default().color);
     }
