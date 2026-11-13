@@ -70,7 +70,7 @@ impl Default for MyWordApp {
     fn default() -> Self {
         let has_saved = has_autosave();
         Self {
-            editor: EditorState::default(),
+            editor: EditorState::new_empty(),
             last_typing_time: Instant::now(),
             last_frame_time: Instant::now(),
             fps: 60.0,

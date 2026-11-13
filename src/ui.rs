@@ -904,7 +904,7 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
                 // Nút 1: Mở tệp từ máy tính
                 let open_btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new("📂  Mở tệp từ máy tính... (.doc, .mwd, .txt)")
+                        egui::RichText::new("Mở tệp từ máy tính... (.doc, .mwd, .txt)")
                             .size(13.5)
                             .color(theme.primary_accent)
                             .strong(),
@@ -920,7 +920,7 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
                 // Nút 2: Tạo tài liệu trống
                 let new_btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new("📝  Tạo trang tài liệu mới (Trống)")
+                        egui::RichText::new("Tạo trang tài liệu mới (Trống)")
                             .size(13.0)
                             .color(theme.text_main),
                     )
@@ -935,7 +935,7 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
                 // Nút 3: Dùng văn bản mẫu
                 let sample_btn = ui.add(
                     egui::Button::new(
-                        egui::RichText::new("📑  Dùng văn bản mẫu & Hướng dẫn")
+                        egui::RichText::new("Dùng văn bản mẫu & Hướng dẫn")
                             .size(13.0)
                             .color(theme.text_main),
                     )
@@ -949,7 +949,7 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
                     ui.add_space(6.0);
                     let rec_btn = ui.add(
                         egui::Button::new(
-                            egui::RichText::new("🔄  Khôi phục bản sao lưu tự động (.doc)")
+                            egui::RichText::new("Khôi phục bản sao lưu tự động (.doc)")
                                 .size(13.0)
                                 .color(Color32::from_rgb(234, 88, 12))
                                 .strong(),
