@@ -149,22 +149,23 @@ pub fn clear_autosave() {
     }
 }
 
-pub fn write_autosave(editor: &EditorState) {
+pub fn write_autosave(editor: &EditorState) -> Result<(), std::io::Error> {
     if let Some(path) = autosave_path() {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
         let payload = serialize_mwd(&editor.content, &editor.spans, &editor.para_alignments);
-        let _ = std::fs::write(&path, payload.as_bytes());
+        std::fs::write(&path, payload.as_bytes())?;
     }
     // Luôn sao lưu song song thành file .doc chuẩn Microsoft Word
     if let Some(doc_path) = autosave_path_doc() {
         if let Some(parent) = doc_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
         let doc_payload = export_word_doc(&editor.content, &editor.spans, &editor.para_alignments);
-        let _ = std::fs::write(&doc_path, doc_payload.as_bytes());
+        std::fs::write(&doc_path, doc_payload.as_bytes())?;
     }
+    Ok(())
 }
 
 /// Nạp phông hệ thống Windows làm ưu tiên hàng đầu, đồng thời giữ bộ phông mặc định của egui
@@ -262,7 +263,7 @@ mod tests {
     #[test]
     fn test_autosave_lifecycle_write_read_clear() {
         let ed = EditorState::from_plain_text("Văn bản kiểm thử lưu tự động");
-        write_autosave(&ed);
+        assert!(write_autosave(&ed).is_ok());
         assert!(has_autosave());
         if let Some(doc_p) = autosave_path_doc() {
             assert!(doc_p.is_file());

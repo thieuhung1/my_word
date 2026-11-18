@@ -817,34 +817,36 @@ pub fn render_confirm_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
 
     if close_modal {
         app.pending_confirm = None;
+        app.cleanup_pending_file_ops();
     } else if do_discard {
         app.pending_confirm = None;
         app.editor.is_dirty = false;
         match action {
             crate::app::ConfirmAction::Quit => {
+                app.cleanup_pending_file_ops();
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             crate::app::ConfirmAction::OpenNew => {
-                app.trigger_open_dialog(ctx.clone());
+                if let Some(drop_path) = app.pending_drop_path.take() {
+                    app.load_from_path(&drop_path);
+                } else {
+                    app.trigger_open_dialog(ctx.clone());
+                }
+                app.cleanup_pending_file_ops();
             }
             crate::app::ConfirmAction::NewDocument => {
+                app.cleanup_pending_file_ops();
                 app.new_document();
             }
         }
     } else if do_save {
         app.pending_confirm = None;
         if let Some(path) = app.current_file_path.clone() {
-            app.write_to_path(&path);
-            match action {
-                crate::app::ConfirmAction::Quit => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                crate::app::ConfirmAction::OpenNew => {
-                    app.trigger_open_dialog(ctx.clone());
-                }
-                crate::app::ConfirmAction::NewDocument => {
-                    app.new_document();
-                }
+            if app.write_to_path(&path) {
+                app.post_save_action = Some(action);
+                app.execute_post_save_action(ctx);
+            } else {
+                app.cleanup_pending_file_ops();
             }
         } else {
             app.post_save_action = Some(action);

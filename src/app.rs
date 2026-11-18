@@ -160,6 +160,18 @@ impl MyWordApp {
         }
     }
 
+    pub fn reset_document_view_state(&mut self) {
+        self.cached_layout = None;
+        self.cached_matches.clear();
+        self.active_match_idx = 0;
+        self.scroll_to_caret = true;
+    }
+
+    pub fn cleanup_pending_file_ops(&mut self) {
+        self.post_save_action = None;
+        self.pending_drop_path = None;
+    }
+
     pub fn recover_autosave(&mut self) {
         match read_autosave() {
             Ok((text, spans, aligns)) => {
@@ -172,9 +184,8 @@ impl MyWordApp {
                 self.editor.mark_content_changed();
                 self.editor.is_dirty = true;
                 self.editor.sync_active_style_to_caret();
-                self.cached_layout = None;
+                self.reset_document_view_state();
                 self.show_recovery_banner = false;
-                self.scroll_to_caret = true;
                 self.set_status("Đã khôi phục phiên soạn thảo chưa lưu");
             }
             Err(e) => {
@@ -193,10 +204,7 @@ impl MyWordApp {
     pub fn new_document(&mut self) {
         self.editor = EditorState::new_empty();
         self.current_file_path = None;
-        self.cached_layout = None;
-        self.cached_matches.clear();
-        self.active_match_idx = 0;
-        self.scroll_to_caret = true;
+        self.reset_document_view_state();
         clear_autosave();
         self.set_status("Tài liệu mới");
     }
@@ -250,7 +258,7 @@ impl MyWordApp {
         }
     }
 
-    fn execute_post_save_action(&mut self, ctx: &egui::Context) {
+    pub fn execute_post_save_action(&mut self, ctx: &egui::Context) {
         if let Some(action) = self.post_save_action.take() {
             match action {
                 ConfirmAction::Quit => {
@@ -270,7 +278,7 @@ impl MyWordApp {
         }
     }
 
-    fn load_from_path(&mut self, path: &Path) {
+    pub fn load_from_path(&mut self, path: &Path) {
         match load_document(path) {
             Ok((text, spans, aligns)) => {
                 self.editor = EditorState::default();
@@ -281,10 +289,7 @@ impl MyWordApp {
                 self.editor.mark_content_changed();
                 self.editor.is_dirty = false;
                 self.editor.sync_active_style_to_caret();
-                self.cached_layout = None;
-                self.cached_matches.clear();
-                self.active_match_idx = 0;
-                self.scroll_to_caret = true;
+                self.reset_document_view_state();
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("tệp");
                 self.set_status(&format!("Đã mở: {}", name));
             }
@@ -299,8 +304,14 @@ impl MyWordApp {
         {
             return;
         }
-        self.last_autosave = Instant::now();
-        write_autosave(&self.editor);
+        match write_autosave(&self.editor) {
+            Ok(()) => {
+                self.last_autosave = Instant::now();
+            }
+            Err(e) => {
+                self.set_status(&format!("Lưu tự động thất bại: {}", e));
+            }
+        }
     }
 
     fn poll_file_dialog(&mut self, ctx: &egui::Context) {
@@ -315,19 +326,59 @@ impl MyWordApp {
                                 if self.write_to_path(&p) {
                                     self.execute_post_save_action(ctx);
                                 } else {
-                                    self.post_save_action = None;
+                                    self.cleanup_pending_file_ops();
                                 }
                             }
                         }
                     } else {
-                        self.post_save_action = None;
+                        self.cleanup_pending_file_ops();
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.file_dialog_rx = None;
-                    self.post_save_action = None;
+                    self.cleanup_pending_file_ops();
                 }
+            }
+        }
+    }
+
+    /// Fallback tính ranh giới đầu/cuối dòng trực tiếp từ nội dung văn bản khi CachedLayout chưa sẵn sàng.
+    /// Đảm bảo offset trả về luôn nằm trên ranh giới ký tự UTF-8 (char boundary) hợp lệ.
+    pub fn line_boundary_fallback(content: &str, caret: usize, to_end: bool) -> usize {
+        let len = content.len();
+        if len == 0 {
+            return 0;
+        }
+        let safe_caret = caret.min(len);
+        let safe_caret = if content.is_char_boundary(safe_caret) {
+            safe_caret
+        } else {
+            let mut c = safe_caret;
+            while c > 0 && !content.is_char_boundary(c) {
+                c -= 1;
+            }
+            c
+        };
+
+        if !to_end {
+            // Nhấn Home: Tìm ký tự xuống dòng '\n' hoặc PAGE_BREAK_CHAR gần nhất phía trước
+            match content[..safe_caret].rfind(['\n', PAGE_BREAK_CHAR]) {
+                Some(idx) => idx + 1,
+                None => 0,
+            }
+        } else {
+            // Nhấn End: Tìm ký tự xuống dòng '\n' hoặc PAGE_BREAK_CHAR gần nhất phía sau
+            match content[safe_caret..].find(['\n', PAGE_BREAK_CHAR]) {
+                Some(rel_idx) => {
+                    let mut end = safe_caret + rel_idx;
+                    // Bỏ qua '\r' nếu tệp có định dạng xuống dòng Windows CRLF
+                    if end > 0 && content.as_bytes().get(end - 1) == Some(&b'\r') {
+                        end -= 1;
+                    }
+                    end
+                }
+                None => len,
             }
         }
     }
@@ -343,10 +394,12 @@ impl MyWordApp {
             let (b_start, b_end) =
                 cache.line_boundary_at(&self.editor.content, self.editor.caret_byte_offset);
             if to_end { b_end } else { b_start }
-        } else if to_end {
-            self.editor.content.len()
         } else {
-            0
+            Self::line_boundary_fallback(
+                &self.editor.content,
+                self.editor.caret_byte_offset,
+                to_end,
+            )
         };
 
         self.editor.caret_byte_offset = target_byte;
@@ -840,5 +893,72 @@ mod tests {
         });
         app.process_events(&ctx, false);
         assert!(!app.show_startup_modal);
+    }
+
+    #[test]
+    fn test_line_boundary_fallback_home_end() {
+        let content = "Dòng 1: Tiếng Việt\nDòng 2: Soạn thảo\nDòng 3: Kết thúc";
+        // Vị trí bắt đầu Dòng 2
+        let line2_start = content.find("Dòng 2").unwrap();
+        let line2_mid = content.find("Soạn").unwrap();
+        let line2_end = content.find("\nDòng 3").unwrap();
+
+        // 1. Khi con trỏ ở giữa Dòng 2, Home phải nhảy về đầu Dòng 2 (không nhảy về 0)
+        let home_idx = MyWordApp::line_boundary_fallback(content, line2_mid, false);
+        assert_eq!(home_idx, line2_start);
+
+        // 2. Khi con trỏ ở giữa Dòng 2, End phải nhảy về cuối Dòng 2 (không nhảy về content.len())
+        let end_idx = MyWordApp::line_boundary_fallback(content, line2_mid, true);
+        assert_eq!(end_idx, line2_end);
+
+        // 3. Kiểm tra với app thực tế không có cache layout
+        let mut app = MyWordApp::default();
+        app.editor.content = content.to_string();
+        app.cached_layout = None;
+        app.editor.caret_byte_offset = line2_mid;
+
+        app.move_to_line_boundary(false, false);
+        assert_eq!(app.editor.caret_byte_offset, line2_start);
+        assert!(app.editor.selection_start.is_none());
+
+        app.move_to_line_boundary(true, true);
+        assert_eq!(app.editor.caret_byte_offset, line2_end);
+        assert_eq!(app.editor.selection_start, Some(line2_start));
+
+        // 4. Kiểm tra CRLF
+        let crlf_content = "Dòng A\r\nDòng B";
+        let crlf_end = MyWordApp::line_boundary_fallback(crlf_content, 2, true);
+        assert_eq!(&crlf_content[..crlf_end], "Dòng A");
+    }
+
+    #[test]
+    fn test_cleanup_pending_file_ops_prevents_leaked_drop_path() {
+        let mut app = MyWordApp {
+            pending_drop_path: Some(PathBuf::from("C:\\test\\dropped.mwd")),
+            post_save_action: Some(ConfirmAction::OpenNew),
+            ..Default::default()
+        };
+
+        app.cleanup_pending_file_ops();
+
+        assert!(app.pending_drop_path.is_none());
+        assert!(app.post_save_action.is_none());
+    }
+
+    #[test]
+    fn test_reset_document_view_state_clears_all_caches() {
+        let mut app = MyWordApp {
+            cached_matches: vec![(0, 5), (10, 15)],
+            active_match_idx: 1,
+            scroll_to_caret: false,
+            ..Default::default()
+        };
+
+        app.reset_document_view_state();
+
+        assert!(app.cached_layout.is_none());
+        assert!(app.cached_matches.is_empty());
+        assert_eq!(app.active_match_idx, 0);
+        assert!(app.scroll_to_caret);
     }
 }
