@@ -28,6 +28,8 @@ pub enum RibbonTab {
     Home,
     Insert,
     Layout,
+    References,
+    Review,
     View,
 }
 
@@ -46,6 +48,8 @@ pub enum InspectorTab {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StartupNavTab {
     Recent,
+    Pinned,
+    Local,
     Templates,
 }
 
@@ -105,13 +109,15 @@ pub struct MyWordApp {
     pub nav_tab: NavTab,
     pub inspector_tab: InspectorTab,
     pub startup_nav_tab: StartupNavTab,
+    pub selected_recent_idx: usize,
+    pub startup_search_query: String,
 }
 
 impl Default for MyWordApp {
     fn default() -> Self {
         let has_saved = has_autosave();
         Self {
-            editor: EditorState::new_empty(),
+            editor: crate::ui::build_brand_plan_sample(),
             last_typing_time: Instant::now(),
             last_frame_time: Instant::now(),
             fps: 60.0,
@@ -127,7 +133,7 @@ impl Default for MyWordApp {
             last_caret_pos: None,
             last_line_height: DEFAULT_LINE_HEIGHT_PT,
             pending_keep_selection: false,
-            current_file_path: None,
+            current_file_path: Some(PathBuf::from("Kế hoạch thương hiệu 2026.docx")),
             last_autosave: Instant::now(),
             file_dialog_rx: None,
             find_bar_open: false,
@@ -153,6 +159,8 @@ impl Default for MyWordApp {
             nav_tab: NavTab::Outline,
             inspector_tab: InspectorTab::Text,
             startup_nav_tab: StartupNavTab::Recent,
+            selected_recent_idx: 0,
+            startup_search_query: String::new(),
         }
     }
 }
@@ -1211,7 +1219,7 @@ mod tests {
         app.nav_tab = NavTab::Pages;
         app.inspector_tab = InspectorTab::Page;
         let dark_theme = ThemePalette::from_mode(true);
-        let _ = ctx.run(raw_input, |ctx| {
+        let _ = ctx.run(raw_input.clone(), |ctx| {
             let _ = ensure_layout_cache(&mut app.cached_layout, &mut app.editor, app.zoom, ctx);
             render_header_bar(ctx, &mut app, &dark_theme);
             render_ribbon_bar(ctx, &mut app, &dark_theme);
@@ -1219,6 +1227,16 @@ mod tests {
             render_navigation_sidebar(ctx, &mut app, &dark_theme, 1, 0);
             render_inspector_sidebar(ctx, &mut app, &dark_theme);
             render_page_canvas(ctx, &mut app, &dark_theme, 1, true);
+        });
+
+        // Frame 3: Kiểm tra RibbonTab::References và RibbonTab::Review
+        app.active_ribbon_tab = RibbonTab::References;
+        let _ = ctx.run(raw_input.clone(), |ctx| {
+            render_ribbon_bar(ctx, &mut app, &theme);
+        });
+        app.active_ribbon_tab = RibbonTab::Review;
+        let _ = ctx.run(raw_input, |ctx| {
+            render_ribbon_bar(ctx, &mut app, &theme);
         });
     }
 }

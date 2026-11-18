@@ -36,6 +36,11 @@ pub enum IconKind {
     CloudCheck,
     PanelLeft,
     PanelRight,
+    Pin,
+    Settings,
+    ChevronRight,
+    Share,
+    Comment,
 }
 
 /// Nút bấm chỉ có biểu tượng vector sắc nét (không phụ thuộc glyph font, không bao giờ lỗi ô vuông □)
@@ -109,16 +114,21 @@ pub fn paint_inline_icon(ui: &mut egui::Ui, size: f32, kind: IconKind, color: Co
     draw_icon(ui.painter(), rect.shrink(1.5), kind, color);
 }
 
-/// Vẽ logo ứng dụng dạng thẻ chữ W bo góc chuyên nghiệp (Phong cách Figma #4059DC)
+/// Vẽ logo ứng dụng dạng biểu tượng Canva 3D thuần (tệp + bút lông) sắc nét
 pub fn draw_app_logo(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), egui::Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(7.0), Color32::from_rgb(64, 89, 220));
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "W",
-        egui::FontId::proportional(16.0),
+    let tex = ui.ctx().load_texture(
+        "app_logo_canva_32",
+        egui::ColorImage::from_rgba_unmultiplied(
+            [32, 32],
+            include_bytes!("../assets/icon_32.rgba"),
+        ),
+        egui::TextureOptions::LINEAR,
+    );
+    ui.painter().image(
+        tex.id(),
+        rect,
+        Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
         Color32::WHITE,
     );
 }
@@ -638,6 +648,93 @@ pub fn draw_icon(painter: &egui::Painter, r: Rect, kind: IconKind, color: Color3
                 ],
                 thin,
             );
+        }
+        IconKind::Pin => {
+            painter.line_segment(
+                [
+                    Pos2::new(cx, r.min.y + h * 0.15),
+                    Pos2::new(cx, cy + h * 0.15),
+                ],
+                s,
+            );
+            painter.circle_filled(Pos2::new(cx, r.min.y + h * 0.25), w * 0.18, color);
+            painter.line_segment(
+                [
+                    Pos2::new(cx, cy + h * 0.15),
+                    Pos2::new(cx, r.max.y - h * 0.10),
+                ],
+                thin,
+            );
+        }
+        IconKind::Settings => {
+            painter.circle_stroke(Pos2::new(cx, cy), w.min(h) * 0.28, s);
+            painter.circle_filled(Pos2::new(cx, cy), w.min(h) * 0.12, color);
+            for angle in [
+                0.0_f32,
+                std::f32::consts::FRAC_PI_4,
+                std::f32::consts::FRAC_PI_2,
+                3.0_f32 * std::f32::consts::FRAC_PI_4,
+            ] {
+                let dx = angle.cos() * w * 0.38;
+                let dy = angle.sin() * h * 0.38;
+                painter.line_segment(
+                    [Pos2::new(cx - dx, cy - dy), Pos2::new(cx + dx, cy + dy)],
+                    thin,
+                );
+            }
+        }
+        IconKind::ChevronRight => {
+            let left_x = cx - w * 0.14;
+            let right_x = cx + w * 0.14;
+            painter.line_segment(
+                [Pos2::new(left_x, cy - h * 0.24), Pos2::new(right_x, cy)],
+                s,
+            );
+            painter.line_segment(
+                [Pos2::new(right_x, cy), Pos2::new(left_x, cy + h * 0.24)],
+                s,
+            );
+        }
+        IconKind::Share => {
+            let box_r = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.18, cy - h * 0.05),
+                Pos2::new(r.max.x - w * 0.18, r.max.y - h * 0.12),
+            );
+            painter.rect_stroke(box_r, Rounding::same(2.0), thin);
+            painter.line_segment(
+                [
+                    Pos2::new(cx, cy + h * 0.12),
+                    Pos2::new(cx, r.min.y + h * 0.10),
+                ],
+                s,
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(cx - w * 0.16, r.min.y + h * 0.24),
+                    Pos2::new(cx, r.min.y + h * 0.10),
+                ],
+                s,
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(cx + w * 0.16, r.min.y + h * 0.24),
+                    Pos2::new(cx, r.min.y + h * 0.10),
+                ],
+                s,
+            );
+        }
+        IconKind::Comment => {
+            let bubble = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.14, r.min.y + h * 0.16),
+                Pos2::new(r.max.x - w * 0.14, r.max.y - h * 0.24),
+            );
+            painter.rect_stroke(bubble, Rounding::same(3.0), thin);
+            let tail = [
+                Pos2::new(cx - w * 0.10, r.max.y - h * 0.24),
+                Pos2::new(cx - w * 0.18, r.max.y - h * 0.08),
+                Pos2::new(cx + w * 0.02, r.max.y - h * 0.24),
+            ];
+            painter.add(Shape::convex_polygon(tail.to_vec(), color, Stroke::NONE));
         }
     }
 }
