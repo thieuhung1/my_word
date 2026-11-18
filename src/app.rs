@@ -7,8 +7,8 @@ use crate::platform::{
 };
 use crate::ui::{
     ThemePalette, render_confirm_modal, render_find_replace_bar, render_header_bar,
-    render_page_canvas, render_recovery_banner, render_ribbon_bar, render_startup_modal,
-    render_status_bar,
+    render_inspector_sidebar, render_navigation_sidebar, render_page_canvas,
+    render_recovery_banner, render_ribbon_bar, render_startup_modal, render_status_bar,
 };
 use eframe::egui::{self, Pos2};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,40 @@ pub enum ConfirmAction {
     Quit,
     OpenNew,
     NewDocument,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RibbonTab {
+    File,
+    Home,
+    Insert,
+    Layout,
+    View,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NavTab {
+    Outline,
+    Pages,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InspectorTab {
+    Text,
+    Page,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StartupNavTab {
+    Recent,
+    Templates,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineHeading {
+    pub byte_offset: usize,
+    pub title: String,
+    pub level: u8,
 }
 
 pub const CARET_BLINK_MS: u64 = 550;
@@ -64,6 +98,13 @@ pub struct MyWordApp {
     pub show_startup_modal: bool,
     pub last_external_backspace: Option<Instant>,
     pub scroll_to_caret: bool,
+    pub active_ribbon_tab: RibbonTab,
+    pub focus_mode: bool,
+    pub show_nav_panel: bool,
+    pub show_inspector_panel: bool,
+    pub nav_tab: NavTab,
+    pub inspector_tab: InspectorTab,
+    pub startup_nav_tab: StartupNavTab,
 }
 
 impl Default for MyWordApp {
@@ -105,11 +146,74 @@ impl Default for MyWordApp {
             show_startup_modal: true,
             last_external_backspace: None,
             scroll_to_caret: false,
+            active_ribbon_tab: RibbonTab::Home,
+            focus_mode: false,
+            show_nav_panel: true,
+            show_inspector_panel: true,
+            nav_tab: NavTab::Outline,
+            inspector_tab: InspectorTab::Text,
+            startup_nav_tab: StartupNavTab::Recent,
         }
     }
 }
 
 impl MyWordApp {
+    pub fn extract_outline_headings(&self) -> Vec<OutlineHeading> {
+        let mut headings = Vec::new();
+        let mut offset = 0usize;
+        for raw_line in self.editor.content.split('\n') {
+            let trimmed = raw_line.trim().trim_matches(PAGE_BREAK_CHAR).trim();
+            if !trimmed.is_empty() {
+                let first_char_offset = offset + raw_line.find(trimmed).unwrap_or(0);
+                let span_idx = self
+                    .editor
+                    .spans
+                    .partition_point(|s| s.end <= first_char_offset);
+                let style = self
+                    .editor
+                    .spans
+                    .get(span_idx)
+                    .map(|s| s.style)
+                    .unwrap_or_default();
+                let (level, title) = if let Some(rest) = trimmed.strip_prefix("### ") {
+                    (3, rest.trim().to_string())
+                } else if let Some(rest) = trimmed.strip_prefix("## ") {
+                    (2, rest.trim().to_string())
+                } else if let Some(rest) = trimmed.strip_prefix("# ") {
+                    (1, rest.trim().to_string())
+                } else if style.bold && style.font_size >= 20.0 {
+                    (1, trimmed.to_string())
+                } else if style.bold && style.font_size >= 17.0 {
+                    (2, trimmed.to_string())
+                } else if style.bold && style.font_size >= 15.0 {
+                    (3, trimmed.to_string())
+                } else {
+                    (0, String::new())
+                };
+                if level > 0 && !title.is_empty() {
+                    headings.push(OutlineHeading {
+                        byte_offset: first_char_offset,
+                        title,
+                        level,
+                    });
+                }
+            }
+            offset += raw_line.len() + 1;
+        }
+        headings
+    }
+
+    pub fn jump_to_byte(&mut self, byte_offset: usize) {
+        let mut safe = byte_offset.min(self.editor.content.len());
+        while safe > 0 && !self.editor.content.is_char_boundary(safe) {
+            safe -= 1;
+        }
+        self.editor.caret_byte_offset = safe;
+        self.editor.selection_start = None;
+        self.editor.sync_active_style_to_caret();
+        self.scroll_to_caret = true;
+        self.last_typing_time = Instant::now();
+    }
     pub fn set_status(&mut self, msg: &str) {
         self.status_message = Some((msg.to_string(), Instant::now()));
     }
@@ -545,7 +649,22 @@ impl MyWordApp {
                     modifiers,
                     ..
                 } if modifiers.command => {
-                    self.trigger_new_document();
+                    if self.show_startup_modal {
+                        self.show_startup_modal = false;
+                        self.new_document();
+                    } else {
+                        self.trigger_new_document();
+                    }
+                    continue;
+                }
+                egui::Event::Key {
+                    key: egui::Key::K,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command => {
+                    self.find_bar_open = true;
+                    self.focus_find_input = true;
                     continue;
                 }
                 egui::Event::Key {
@@ -799,6 +918,16 @@ impl eframe::App for MyWordApp {
             char_count,
         );
 
+        let viewport_w = ctx.screen_rect().width();
+        if !self.focus_mode {
+            if self.show_nav_panel && viewport_w >= 860.0 {
+                render_navigation_sidebar(ctx, self, &theme, total_pages, caret_page_idx);
+            }
+            if self.show_inspector_panel && viewport_w >= 1020.0 {
+                render_inspector_sidebar(ctx, self, &theme);
+            }
+        }
+
         let elapsed_ms = self.last_typing_time.elapsed().as_millis() as u64;
         let show_caret = (elapsed_ms / CARET_BLINK_MS).is_multiple_of(2);
         let ime_output_rect = render_page_canvas(ctx, self, &theme, total_pages, show_caret);
@@ -960,5 +1089,136 @@ mod tests {
         assert!(app.cached_matches.is_empty());
         assert_eq!(app.active_match_idx, 0);
         assert!(app.scroll_to_caret);
+    }
+
+    #[test]
+    fn test_extract_outline_headings_and_jump_to_byte() {
+        use crate::document::{StyleSpan, TextStyle};
+
+        let mut app = MyWordApp::default();
+        let h1 = TextStyle {
+            bold: true,
+            font_size: 22.0,
+            ..Default::default()
+        };
+        let body = TextStyle {
+            font_size: 14.0,
+            ..Default::default()
+        };
+
+        let p1 = "01 Tầm nhìn & định hướng\n";
+        let p2 = "Nội dung chi tiết tiếng Việt.\n";
+        let p3 = "## Mục tiêu chiến lược\n";
+        let p4 = "Đoạn cuối.";
+
+        let s1_end = p1.len();
+        let s2_end = s1_end + p2.len();
+        let s3_end = s2_end + p3.len();
+        let s4_end = s3_end + p4.len();
+
+        app.editor.content = format!("{}{}{}{}", p1, p2, p3, p4);
+        app.editor.spans = vec![
+            StyleSpan {
+                start: 0,
+                end: s1_end,
+                style: h1,
+            },
+            StyleSpan {
+                start: s1_end,
+                end: s4_end,
+                style: body,
+            },
+        ];
+
+        let headings = app.extract_outline_headings();
+        assert_eq!(headings.len(), 2);
+        assert_eq!(headings[0].level, 1);
+        assert_eq!(headings[0].title, "01 Tầm nhìn & định hướng");
+        assert_eq!(headings[0].byte_offset, 0);
+        assert_eq!(headings[1].level, 2);
+        assert_eq!(headings[1].title, "Mục tiêu chiến lược");
+        assert_eq!(headings[1].byte_offset, s2_end);
+
+        // Kiểm tra jump_to_byte bảo vệ ranh giới ký tự UTF-8
+        app.jump_to_byte(headings[1].byte_offset);
+        assert_eq!(app.editor.caret_byte_offset, s2_end);
+        assert!(app.scroll_to_caret);
+    }
+
+    #[test]
+    fn test_ctrl_k_opens_find_bar_and_ctrl_n_from_startup() {
+        let mut app = MyWordApp::default();
+        assert!(app.show_startup_modal);
+
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Key {
+                key: egui::Key::N,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+        });
+        app.process_events(&ctx, false);
+        assert!(!app.show_startup_modal);
+
+        ctx.input_mut(|i| {
+            i.events.push(egui::Event::Key {
+                key: egui::Key::K,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            });
+        });
+        app.process_events(&ctx, false);
+        assert!(app.find_bar_open);
+        assert!(app.focus_find_input);
+    }
+
+    #[test]
+    fn test_figma_ui_full_frame_render_no_panic() {
+        let mut app = MyWordApp::default();
+        let ctx = egui::Context::default();
+        crate::platform::setup_fonts(&ctx);
+        let theme = ThemePalette::from_mode(false);
+        theme.apply(&ctx);
+
+        let raw_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::Vec2::new(1280.0, 860.0),
+            )),
+            ..Default::default()
+        };
+
+        // Frame 1: Render với Startup Modal, Header, Ribbon, Sidebars và Canvas
+        let _ = ctx.run(raw_input.clone(), |ctx| {
+            let _ = ensure_layout_cache(&mut app.cached_layout, &mut app.editor, app.zoom, ctx);
+            render_header_bar(ctx, &mut app, &theme);
+            render_ribbon_bar(ctx, &mut app, &theme);
+            render_status_bar(ctx, &mut app, &theme, 0, 1, 0, 0);
+            render_navigation_sidebar(ctx, &mut app, &theme, 1, 0);
+            render_inspector_sidebar(ctx, &mut app, &theme);
+            render_page_canvas(ctx, &mut app, &theme, 1, true);
+            render_startup_modal(ctx, &mut app, &theme);
+        });
+
+        // Frame 2: Đổi sang Dark Mode và chuyển các tab phụ
+        app.show_startup_modal = false;
+        app.active_ribbon_tab = RibbonTab::Insert;
+        app.nav_tab = NavTab::Pages;
+        app.inspector_tab = InspectorTab::Page;
+        let dark_theme = ThemePalette::from_mode(true);
+        let _ = ctx.run(raw_input, |ctx| {
+            let _ = ensure_layout_cache(&mut app.cached_layout, &mut app.editor, app.zoom, ctx);
+            render_header_bar(ctx, &mut app, &dark_theme);
+            render_ribbon_bar(ctx, &mut app, &dark_theme);
+            render_status_bar(ctx, &mut app, &dark_theme, 0, 1, 10, 50);
+            render_navigation_sidebar(ctx, &mut app, &dark_theme, 1, 0);
+            render_inspector_sidebar(ctx, &mut app, &dark_theme);
+            render_page_canvas(ctx, &mut app, &dark_theme, 1, true);
+        });
     }
 }

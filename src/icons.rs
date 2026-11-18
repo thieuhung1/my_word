@@ -14,7 +14,6 @@ pub enum IconKind {
     AlignJustify,
     Margins,
     FolderOpen,
-    Save,
     Search,
     PageBreak,
     Highlight,
@@ -25,6 +24,18 @@ pub enum IconKind {
     ListBullet,
     ListNumber,
     Ruler,
+    Check,
+    Book,
+    ChevronLeft,
+    Close,
+    Plus,
+    Focus,
+    PageDoc,
+    Grid,
+    Clock,
+    CloudCheck,
+    PanelLeft,
+    PanelRight,
 }
 
 /// Nút bấm chỉ có biểu tượng vector sắc nét (không phụ thuộc glyph font, không bao giờ lỗi ô vuông □)
@@ -39,14 +50,14 @@ pub fn icon_button(
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let enabled = ui.is_enabled();
 
-    let accent = Color32::from_rgb(37, 99, 235);
+    let accent = Color32::from_rgb(64, 89, 220);
     let bg = if !enabled {
         Color32::TRANSPARENT
     } else if active {
         if dark {
-            Color32::from_rgb(30, 58, 138)
+            Color32::from_rgb(42, 54, 118)
         } else {
-            Color32::from_rgb(238, 242, 255)
+            Color32::from_rgb(238, 241, 255)
         }
     } else if response.hovered() {
         if dark {
@@ -59,7 +70,7 @@ pub fn icon_button(
     };
 
     let stroke = if active && enabled {
-        Stroke::new(1.0_f32, accent)
+        Stroke::new(1.0_f32, Color32::from_rgb(201, 210, 255))
     } else {
         Stroke::NONE
     };
@@ -72,18 +83,18 @@ pub fn icon_button(
         if dark {
             Color32::from_rgb(75, 85, 99)
         } else {
-            Color32::from_rgb(190, 198, 210)
+            Color32::from_rgb(185, 193, 207)
         }
     } else if active {
         if dark {
-            Color32::from_rgb(147, 197, 253)
+            Color32::from_rgb(165, 180, 252)
         } else {
-            Color32::from_rgb(29, 78, 216)
+            accent
         }
     } else if dark {
         Color32::from_rgb(226, 232, 240)
     } else {
-        Color32::from_rgb(51, 65, 85)
+        Color32::from_rgb(68, 79, 99)
     };
 
     let icon_rect = rect.shrink2(Vec2::new(6.0, 5.0));
@@ -92,16 +103,22 @@ pub fn icon_button(
     response.on_hover_text(tooltip)
 }
 
-/// Vẽ logo ứng dụng dạng thẻ chữ W bo góc chuyên nghiệp
+/// Vẽ biểu tượng inline (không tạo nút bấm riêng)
+pub fn paint_inline_icon(ui: &mut egui::Ui, size: f32, kind: IconKind, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
+    draw_icon(ui.painter(), rect.shrink(1.5), kind, color);
+}
+
+/// Vẽ logo ứng dụng dạng thẻ chữ W bo góc chuyên nghiệp (Phong cách Figma #4059DC)
 pub fn draw_app_logo(ui: &mut egui::Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(24.0, 24.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), egui::Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(6.0), Color32::from_rgb(37, 99, 235));
+    painter.rect_filled(rect, Rounding::same(7.0), Color32::from_rgb(64, 89, 220));
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "W",
-        egui::FontId::proportional(14.0),
+        egui::FontId::proportional(16.0),
         Color32::WHITE,
     );
 }
@@ -253,15 +270,6 @@ pub fn draw_icon(painter: &egui::Painter, r: Rect, kind: IconKind, color: Color3
                 Pos2::new(r.min.x + w * 0.54, r.min.y + h * 0.24),
             ];
             painter.add(Shape::line(tab.to_vec(), thin));
-        }
-        IconKind::Save => {
-            let box_r = r.shrink(1.0);
-            painter.rect_stroke(box_r, Rounding::same(2.0), thin);
-            let top_slot = Rect::from_min_max(
-                Pos2::new(box_r.min.x + 3.0, box_r.min.y),
-                Pos2::new(box_r.max.x - 4.0, box_r.min.y + box_r.height() * 0.38),
-            );
-            painter.rect_stroke(top_slot, Rounding::ZERO, thin);
         }
         IconKind::Search => {
             let center = Pos2::new(r.min.x + w * 0.42, r.min.y + h * 0.42);
@@ -488,6 +496,148 @@ pub fn draw_icon(painter: &egui::Painter, r: Rect, kind: IconKind, color: Color3
                     thin,
                 );
             }
+        }
+        IconKind::Check => {
+            let pts = vec![
+                Pos2::new(r.min.x + w * 0.14, cy + h * 0.04),
+                Pos2::new(r.min.x + w * 0.40, r.max.y - h * 0.18),
+                Pos2::new(r.max.x - w * 0.12, r.min.y + h * 0.20),
+            ];
+            painter.add(Shape::line(pts, s));
+        }
+        IconKind::Book => {
+            let left = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.08, r.min.y + h * 0.14),
+                Pos2::new(cx, r.max.y - h * 0.14),
+            );
+            let right = Rect::from_min_max(
+                Pos2::new(cx, r.min.y + h * 0.14),
+                Pos2::new(r.max.x - w * 0.08, r.max.y - h * 0.14),
+            );
+            painter.rect_stroke(left, Rounding::same(1.5), thin);
+            painter.rect_stroke(right, Rounding::same(1.5), thin);
+        }
+        IconKind::ChevronLeft => {
+            let pts = vec![
+                Pos2::new(cx + w * 0.16, r.min.y + h * 0.18),
+                Pos2::new(cx - w * 0.18, cy),
+                Pos2::new(cx + w * 0.16, r.max.y - h * 0.18),
+            ];
+            painter.add(Shape::line(pts, s));
+        }
+        IconKind::Close => {
+            let p = 0.22;
+            painter.line_segment(
+                [
+                    Pos2::new(r.min.x + w * p, r.min.y + h * p),
+                    Pos2::new(r.max.x - w * p, r.max.y - h * p),
+                ],
+                s,
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(r.max.x - w * p, r.min.y + h * p),
+                    Pos2::new(r.min.x + w * p, r.max.y - h * p),
+                ],
+                s,
+            );
+        }
+        IconKind::Plus => {
+            painter.line_segment(
+                [
+                    Pos2::new(cx, r.min.y + h * 0.16),
+                    Pos2::new(cx, r.max.y - h * 0.16),
+                ],
+                s,
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(r.min.x + w * 0.16, cy),
+                    Pos2::new(r.max.x - w * 0.16, cy),
+                ],
+                s,
+            );
+        }
+        IconKind::Focus => {
+            let box_r = r.shrink(1.5);
+            painter.rect_stroke(box_r, Rounding::same(2.0), thin);
+            let inner = box_r.shrink(3.0);
+            painter.rect_filled(inner, Rounding::same(1.0), color);
+        }
+        IconKind::PageDoc => {
+            let doc = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.18, r.min.y + h * 0.08),
+                Pos2::new(r.max.x - w * 0.18, r.max.y - h * 0.08),
+            );
+            painter.rect_stroke(doc, Rounding::same(2.0), thin);
+            painter.line_segment(
+                [
+                    Pos2::new(doc.min.x + 2.5, doc.min.y + doc.height() * 0.35),
+                    Pos2::new(doc.max.x - 2.5, doc.min.y + doc.height() * 0.35),
+                ],
+                thin,
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(doc.min.x + 2.5, doc.min.y + doc.height() * 0.62),
+                    Pos2::new(doc.max.x - 4.0, doc.min.y + doc.height() * 0.62),
+                ],
+                thin,
+            );
+        }
+        IconKind::Grid => {
+            let gap = 2.0;
+            let cw = (w - gap) * 0.42;
+            let ch = (h - gap) * 0.42;
+            let ox = cx - cw - gap * 0.5;
+            let oy = cy - ch - gap * 0.5;
+            for ix in 0..2 {
+                for iy in 0..2 {
+                    let cell = Rect::from_min_size(
+                        Pos2::new(ox + (ix as f32) * (cw + gap), oy + (iy as f32) * (ch + gap)),
+                        Vec2::new(cw, ch),
+                    );
+                    painter.rect_stroke(cell, Rounding::same(1.0), thin);
+                }
+            }
+        }
+        IconKind::Clock => {
+            painter.circle_stroke(Pos2::new(cx, cy), w.min(h) * 0.40, thin);
+            painter.line_segment([Pos2::new(cx, cy), Pos2::new(cx, cy - h * 0.22)], thin);
+            painter.line_segment(
+                [Pos2::new(cx, cy), Pos2::new(cx + w * 0.18, cy + h * 0.06)],
+                thin,
+            );
+        }
+        IconKind::CloudCheck => {
+            let base = Rect::from_min_max(
+                Pos2::new(r.min.x + w * 0.10, cy - h * 0.05),
+                Pos2::new(r.max.x - w * 0.10, r.max.y - h * 0.16),
+            );
+            painter.rect_stroke(base, Rounding::same(4.0), thin);
+            painter.circle_stroke(Pos2::new(cx - w * 0.06, cy - h * 0.12), w * 0.18, thin);
+        }
+        IconKind::PanelLeft => {
+            let box_r = r.shrink(1.0);
+            painter.rect_stroke(box_r, Rounding::same(2.0), thin);
+            painter.line_segment(
+                [
+                    Pos2::new(box_r.min.x + box_r.width() * 0.34, box_r.min.y),
+                    Pos2::new(box_r.min.x + box_r.width() * 0.34, box_r.max.y),
+                ],
+                thin,
+            );
+        }
+        IconKind::PanelRight => {
+            let box_r = r.shrink(1.0);
+            painter.rect_stroke(box_r, Rounding::same(2.0), thin);
+            painter.line_segment(
+                [
+                    Pos2::new(box_r.max.x - box_r.width() * 0.34, box_r.min.y),
+                    Pos2::new(box_r.max.x - box_r.width() * 0.34, box_r.max.y),
+                ],
+                thin,
+            );
         }
     }
 }

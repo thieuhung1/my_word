@@ -1,7 +1,7 @@
-use crate::app::MyWordApp;
+use crate::app::{InspectorTab, MyWordApp, NavTab, RibbonTab, StartupNavTab};
 use crate::document::{PAGE_BREAK_CHAR, TextAlignment};
 use crate::editor::{DocumentPresetStyle, InputMethodMode};
-use crate::icons::{IconKind, draw_app_logo, icon_button};
+use crate::icons::{IconKind, draw_app_logo, icon_button, paint_inline_icon};
 use crate::layout::{
     A4_HEIGHT_PT, A4_WIDTH_PT, CachedLayout, PAGE_MARGIN_PT, PointerQuery,
     byte_offset_from_char_index, char_index_from_byte_offset, font_id_for_style,
@@ -12,12 +12,17 @@ use eframe::egui::{self, Color32, FontId, Pos2, Rect, Rounding, Shape, Stroke, V
 pub struct ThemePalette {
     pub is_dark: bool,
     pub surface_bg: Color32,
+    pub sidebar_bg: Color32,
     pub toolbar_bg: Color32,
     pub workspace_bg: Color32,
     pub border_color: Color32,
     pub text_main: Color32,
     pub text_muted: Color32,
     pub primary_accent: Color32,
+    pub accent_tint: Color32,
+    pub accent_border: Color32,
+    pub input_bg: Color32,
+    pub card_bg: Color32,
 }
 
 impl ThemePalette {
@@ -25,24 +30,34 @@ impl ThemePalette {
         if is_dark {
             Self {
                 is_dark: true,
-                surface_bg: Color32::from_rgb(26, 29, 36),
-                toolbar_bg: Color32::from_rgb(22, 24, 30),
-                workspace_bg: Color32::from_rgb(17, 19, 24),
-                border_color: Color32::from_rgb(46, 51, 64),
+                surface_bg: Color32::from_rgb(24, 27, 34),
+                sidebar_bg: Color32::from_rgb(20, 22, 28),
+                toolbar_bg: Color32::from_rgb(24, 27, 34),
+                workspace_bg: Color32::from_rgb(15, 17, 22),
+                border_color: Color32::from_rgb(44, 49, 62),
                 text_main: Color32::from_rgb(241, 245, 249),
                 text_muted: Color32::from_rgb(148, 163, 184),
-                primary_accent: Color32::from_rgb(37, 99, 235),
+                primary_accent: Color32::from_rgb(99, 122, 245),
+                accent_tint: Color32::from_rgb(36, 46, 98),
+                accent_border: Color32::from_rgb(72, 92, 180),
+                input_bg: Color32::from_rgb(32, 36, 46),
+                card_bg: Color32::from_rgb(30, 34, 44),
             }
         } else {
             Self {
                 is_dark: false,
                 surface_bg: Color32::WHITE,
-                toolbar_bg: Color32::from_rgb(248, 250, 252),
-                workspace_bg: Color32::from_rgb(239, 243, 248),
-                border_color: Color32::from_rgb(226, 232, 240),
-                text_main: Color32::from_rgb(30, 41, 59),
-                text_muted: Color32::from_rgb(100, 116, 139),
-                primary_accent: Color32::from_rgb(37, 99, 235),
+                sidebar_bg: Color32::from_rgb(250, 251, 253),
+                toolbar_bg: Color32::WHITE,
+                workspace_bg: Color32::from_rgb(240, 242, 245),
+                border_color: Color32::from_rgb(229, 233, 240),
+                text_main: Color32::from_rgb(35, 43, 60),
+                text_muted: Color32::from_rgb(101, 112, 135),
+                primary_accent: Color32::from_rgb(64, 89, 220),
+                accent_tint: Color32::from_rgb(238, 241, 255),
+                accent_border: Color32::from_rgb(201, 210, 255),
+                input_bg: Color32::from_rgb(245, 246, 249),
+                card_bg: Color32::from_rgb(248, 249, 251),
             }
         }
     }
@@ -57,8 +72,21 @@ impl ThemePalette {
         visuals.widgets.inactive.rounding = Rounding::same(6.0);
         visuals.widgets.hovered.rounding = Rounding::same(6.0);
         visuals.widgets.active.rounding = Rounding::same(6.0);
+        visuals.selection.bg_fill = self.accent_tint;
+        visuals.selection.stroke = Stroke::new(1.0_f32, self.primary_accent);
         ctx.set_visuals(visuals);
     }
+}
+
+fn vertical_divider(ui: &mut egui::Ui, height: f32, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(7.0, height), egui::Sense::hover());
+    ui.painter().line_segment(
+        [
+            Pos2::new(rect.center().x, rect.min.y + 2.0),
+            Pos2::new(rect.center().x, rect.max.y - 2.0),
+        ],
+        Stroke::new(1.0_f32, color),
+    );
 }
 
 pub fn render_header_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
@@ -66,94 +94,126 @@ pub fn render_header_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
         .frame(
             egui::Frame::none()
                 .fill(theme.surface_bg)
-                .inner_margin(egui::Margin::symmetric(16.0, 8.0))
+                .inner_margin(egui::Margin::symmetric(16.0, 9.0))
                 .stroke(Stroke::new(1.0_f32, theme.border_color)),
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Brand Monogram + Tên ứng dụng
                 draw_app_logo(ui);
                 ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("my word")
+                        .size(16.5)
+                        .color(theme.text_main)
+                        .strong(),
+                );
+                ui.add_space(6.0);
+                vertical_divider(ui, 24.0, theme.border_color);
+                ui.add_space(4.0);
+
+                // Tên tài liệu & trạng thái lưu
                 let doc_name = app
                     .current_file_path
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
-                    .unwrap_or("Tài liệu 1");
+                    .unwrap_or("Tài liệu chưa đặt tên");
                 let dirty_mark = if app.editor.is_dirty { " *" } else { "" };
-                ui.label(
-                    egui::RichText::new(format!("{}{}", doc_name, dirty_mark))
-                        .size(15.0)
-                        .color(theme.text_main)
-                        .strong(),
-                );
-                ui.label(egui::RichText::new("•").color(theme.text_muted));
-                ui.label(
-                    egui::RichText::new("Rust Word")
-                        .size(12.0)
-                        .color(theme.text_muted),
-                );
-                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(
+                        egui::RichText::new(format!("{}{}", doc_name, dirty_mark))
+                            .size(13.5)
+                            .color(theme.text_main)
+                            .strong(),
+                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let saved_col = if app.editor.is_dirty {
+                            Color32::from_rgb(217, 119, 6)
+                        } else {
+                            Color32::from_rgb(22, 163, 74)
+                        };
+                        paint_inline_icon(ui, 13.0, IconKind::CloudCheck, saved_col);
+                        let saved_text = if app.editor.is_dirty {
+                            "Có thay đổi chưa lưu"
+                        } else {
+                            "Đã lưu mọi thay đổi"
+                        };
+                        ui.label(
+                            egui::RichText::new(saved_text)
+                                .size(10.5)
+                                .color(theme.text_muted),
+                        );
+                    });
+                });
 
-                let (mode_label, mode_bg, mode_border, mode_fg) = match app.editor.input_mode {
-                    InputMethodMode::AutoTelex => (
-                        "Telex: Tự động",
-                        if theme.is_dark {
-                            Color32::from_rgb(20, 48, 30)
-                        } else {
-                            Color32::from_rgb(240, 253, 244)
-                        },
-                        if theme.is_dark {
-                            Color32::from_rgb(34, 197, 94)
-                        } else {
-                            Color32::from_rgb(187, 247, 208)
-                        },
-                        if theme.is_dark {
-                            Color32::from_rgb(134, 239, 172)
-                        } else {
-                            Color32::from_rgb(21, 128, 61)
-                        },
-                    ),
-                    InputMethodMode::SystemOnly => (
-                        "Telex: Hệ thống",
-                        if theme.is_dark {
-                            Color32::from_rgb(23, 37, 84)
-                        } else {
-                            Color32::from_rgb(239, 246, 255)
-                        },
-                        if theme.is_dark {
-                            Color32::from_rgb(59, 130, 246)
-                        } else {
-                            Color32::from_rgb(191, 219, 254)
-                        },
-                        if theme.is_dark {
-                            Color32::from_rgb(147, 197, 253)
-                        } else {
-                            Color32::from_rgb(29, 78, 216)
-                        },
-                    ),
-                };
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("● {}", mode_label))
-                                .size(11.5)
-                                .color(mode_fg)
-                                .strong(),
-                        )
-                        .fill(mode_bg)
-                        .stroke(Stroke::new(1.0_f32, mode_border))
-                        .rounding(Rounding::same(14.0)),
+                ui.add_space(16.0);
+
+                // Thanh tìm kiếm nhanh kiểu Figma (Ctrl K)
+                let avail_w = ui.available_width();
+                if avail_w > 540.0 {
+                    let pill_w = (avail_w - 390.0).clamp(160.0, 270.0);
+                    let search_btn = egui::Button::new(
+                        egui::RichText::new("Tìm kiếm trong tài liệu...   Ctrl K")
+                            .size(11.5)
+                            .color(theme.text_muted),
                     )
-                    .on_hover_text("Nhấn để chuyển giữa bộ gõ Telex tự động và thuần Hệ thống")
-                    .clicked()
-                {
-                    app.editor.input_mode = match app.editor.input_mode {
-                        InputMethodMode::AutoTelex => InputMethodMode::SystemOnly,
-                        InputMethodMode::SystemOnly => InputMethodMode::AutoTelex,
-                    };
+                    .fill(theme.input_bg)
+                    .stroke(Stroke::new(1.0_f32, theme.border_color))
+                    .rounding(Rounding::same(7.0))
+                    .min_size(Vec2::new(pill_w, 30.0));
+                    if ui
+                        .add(search_btn)
+                        .on_hover_text("Mở thanh Tìm kiếm & Thay thế (Ctrl+F / Ctrl+K)")
+                        .clicked()
+                    {
+                        app.find_bar_open = true;
+                        app.focus_find_input = true;
+                    }
                 }
 
+                // Khu vực nút chức năng bên phải
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+
+                    // Nút CTA Lưu chính (#4059DC)
+                    let save_cta = egui::Button::new(
+                        egui::RichText::new("Lưu tệp")
+                            .size(12.0)
+                            .color(Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(theme.primary_accent)
+                    .rounding(Rounding::same(7.0))
+                    .min_size(Vec2::new(76.0, 30.0));
+                    if ui
+                        .add(save_cta)
+                        .on_hover_text("Lưu tài liệu (Ctrl+S / Ctrl+Shift+S)")
+                        .clicked()
+                    {
+                        app.trigger_save(ctx.clone(), false);
+                    }
+
+                    // Nút Mở tệp viền mảnh
+                    let open_btn = egui::Button::new(
+                        egui::RichText::new("Mở tệp")
+                            .size(12.0)
+                            .color(theme.text_main),
+                    )
+                    .fill(theme.surface_bg)
+                    .stroke(Stroke::new(1.0_f32, theme.border_color))
+                    .rounding(Rounding::same(7.0))
+                    .min_size(Vec2::new(66.0, 30.0));
+                    if ui
+                        .add(open_btn)
+                        .on_hover_text("Mở tệp .mwd / .doc / .txt / .md (Ctrl+O)")
+                        .clicked()
+                    {
+                        app.trigger_open_dialog(ctx.clone());
+                    }
+
                     let theme_icon = if theme.is_dark {
                         IconKind::Sun
                     } else {
@@ -168,31 +228,92 @@ pub fn render_header_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
                         app.dark_workspace = !app.dark_workspace;
                         ThemePalette::from_mode(app.dark_workspace).apply(ctx);
                     }
-                    if icon_button(
-                        ui,
-                        IconKind::Save,
-                        "Lưu tài liệu (Ctrl+S / Ctrl+Shift+S)",
-                        false,
-                        theme.is_dark,
-                    )
-                    .clicked()
+
+                    // Nút chọn chế độ Telex
+                    let (mode_label, mode_bg, mode_border, mode_fg) = match app.editor.input_mode {
+                        InputMethodMode::AutoTelex => (
+                            "Telex: Tự động",
+                            if theme.is_dark {
+                                Color32::from_rgb(20, 48, 30)
+                            } else {
+                                Color32::from_rgb(240, 253, 244)
+                            },
+                            if theme.is_dark {
+                                Color32::from_rgb(34, 197, 94)
+                            } else {
+                                Color32::from_rgb(187, 247, 208)
+                            },
+                            if theme.is_dark {
+                                Color32::from_rgb(134, 239, 172)
+                            } else {
+                                Color32::from_rgb(21, 128, 61)
+                            },
+                        ),
+                        InputMethodMode::SystemOnly => (
+                            "Telex: Hệ thống",
+                            theme.accent_tint,
+                            theme.accent_border,
+                            theme.primary_accent,
+                        ),
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(format!("● {}", mode_label))
+                                    .size(11.0)
+                                    .color(mode_fg)
+                                    .strong(),
+                            )
+                            .fill(mode_bg)
+                            .stroke(Stroke::new(1.0_f32, mode_border))
+                            .rounding(Rounding::same(14.0))
+                            .min_size(Vec2::new(0.0, 26.0)),
+                        )
+                        .on_hover_text("Nhấn để chuyển giữa bộ gõ Telex tự động và thuần Hệ thống")
+                        .clicked()
                     {
-                        app.trigger_save(ctx.clone(), false);
-                    }
-                    if icon_button(
-                        ui,
-                        IconKind::FolderOpen,
-                        "Mở tệp .mwd / .txt / .md (Ctrl+O)",
-                        false,
-                        theme.is_dark,
-                    )
-                    .clicked()
-                    {
-                        app.trigger_open_dialog(ctx.clone());
+                        app.editor.input_mode = match app.editor.input_mode {
+                            InputMethodMode::AutoTelex => InputMethodMode::SystemOnly,
+                            InputMethodMode::SystemOnly => InputMethodMode::AutoTelex,
+                        };
                     }
                 });
             });
         });
+}
+
+fn ribbon_tab_button(ui: &mut egui::Ui, label: &str, selected: bool, theme: &ThemePalette) -> bool {
+    let text_color = if selected {
+        theme.primary_accent
+    } else {
+        theme.text_muted
+    };
+    let text = if selected {
+        egui::RichText::new(label)
+            .size(12.5)
+            .strong()
+            .color(text_color)
+    } else {
+        egui::RichText::new(label).size(12.5).color(text_color)
+    };
+    let resp = ui.add(
+        egui::Button::new(text)
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::NONE)
+            .min_size(Vec2::new(56.0, 28.0)),
+    );
+    if selected {
+        let r = resp.rect;
+        ui.painter().rect_filled(
+            Rect::from_min_max(
+                Pos2::new(r.min.x + 6.0, r.max.y - 2.5),
+                Pos2::new(r.max.x - 6.0, r.max.y),
+            ),
+            Rounding::same(1.5),
+            theme.primary_accent,
+        );
+    }
+    resp.clicked()
 }
 
 pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
@@ -201,362 +322,648 @@ pub fn render_ribbon_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &Theme
         .frame(
             egui::Frame::none()
                 .fill(theme.toolbar_bg)
-                .inner_margin(egui::Margin::symmetric(16.0, 6.0))
+                .inner_margin(egui::Margin::symmetric(16.0, 0.0))
                 .stroke(Stroke::new(1.0_f32, theme.border_color)),
         )
         .show(ctx, |ui| {
+            // Hàng 1: Các tab điều hướng Ribbon (Tệp / Trang đầu / Chèn / Bố trí / Hiển thị)
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(3.5, 4.0);
-                ui.style_mut().spacing.interact_size.y = 26.0;
-
-                ui.add_enabled_ui(!app.editor.undo_stack.is_empty(), |ui| {
-                    if icon_button(ui, IconKind::Undo, "Hoàn tác (Ctrl+Z)", false, is_dark)
-                        .clicked()
-                        && app.editor.undo()
-                    {
-                        app.set_status("Đã hoàn tác");
-                    }
-                });
-                ui.add_enabled_ui(!app.editor.redo_stack.is_empty(), |ui| {
-                    if icon_button(ui, IconKind::Redo, "Làm lại (Ctrl+Y)", false, is_dark).clicked()
-                        && app.editor.redo()
-                    {
-                        app.set_status("Đã làm lại");
-                    }
-                });
-                ui.separator();
-
-                let has_selection = app.editor.selected_range().is_some();
-                ui.add_enabled_ui(has_selection, |ui| {
-                    if icon_button(ui, IconKind::Cut, "Cắt (Ctrl+X)", false, is_dark).clicked() {
-                        app.cut_selection_to_clipboard(ctx);
-                    }
-                    if icon_button(ui, IconKind::Copy, "Sao chép (Ctrl+C)", false, is_dark)
-                        .clicked()
-                    {
-                        app.copy_selection_to_clipboard(ctx);
-                    }
-                });
-                ui.add_enabled_ui(!app.editor.clipboard_buffer.is_empty(), |ui| {
-                    if icon_button(ui, IconKind::Paste, "Dán (Ctrl+V)", false, is_dark).clicked() {
-                        let text = app.editor.clipboard_buffer.clone();
-                        app.editor.insert_text(&text);
-                    }
-                });
-                let fp_active = app.editor.format_painter_style.is_some();
-                if icon_button(
-                    ui,
-                    IconKind::FormatPainter,
-                    "Sao chép định dạng (Format Painter)",
-                    fp_active,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.editor.toggle_format_painter();
-                    if app.editor.format_painter_style.is_some() {
-                        app.set_status("Đã chép định dạng — quét chuột lên chữ để áp dụng");
-                    } else {
-                        app.set_status("Đã hủy sao chép định dạng");
-                    }
-                }
-                ui.separator();
-
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("−").size(13.0)).rounding(5.0))
-                    .on_hover_text("Giảm cỡ chữ")
-                    .clicked()
-                {
-                    let next = (app.editor.active_style.font_size - 1.0).max(8.0);
-                    app.editor.apply_format(|s| s.font_size = next);
-                }
-                ui.label(
-                    egui::RichText::new(format!("{:.0} pt", app.editor.active_style.font_size))
-                        .size(12.5)
-                        .color(theme.text_main)
-                        .strong(),
-                );
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("+").size(13.0)).rounding(5.0))
-                    .on_hover_text("Tăng cỡ chữ")
-                    .clicked()
-                {
-                    let next = (app.editor.active_style.font_size + 1.0).min(48.0);
-                    app.editor.apply_format(|s| s.font_size = next);
-                }
-
-                let style_toggle =
-                    |ui: &mut egui::Ui, label: egui::RichText, active: bool, tip: &str| {
-                        let mut btn = egui::Button::new(label)
-                            .min_size(Vec2::new(25.0, 26.0))
-                            .rounding(6.0);
-                        if active {
-                            btn = btn
-                                .fill(if is_dark {
-                                    Color32::from_rgb(30, 58, 138)
-                                } else {
-                                    Color32::from_rgb(238, 242, 255)
-                                })
-                                .stroke(Stroke::new(1.0_f32, theme.primary_accent));
-                        }
-                        ui.add(btn).on_hover_text(tip).clicked()
-                    };
-
-                if style_toggle(
-                    ui,
-                    egui::RichText::new("B").strong().size(13.0),
-                    app.editor.active_style.bold,
-                    "In đậm (Ctrl+B)",
-                ) {
-                    let next = !app.editor.active_style.bold;
-                    app.editor.apply_format(|s| s.bold = next);
-                }
-                if style_toggle(
-                    ui,
-                    egui::RichText::new("I").italics().size(13.0),
-                    app.editor.active_style.italic,
-                    "In nghiêng (Ctrl+I)",
-                ) {
-                    let next = !app.editor.active_style.italic;
-                    app.editor.apply_format(|s| s.italic = next);
-                }
-                if style_toggle(
-                    ui,
-                    egui::RichText::new("U").underline().size(13.0),
-                    app.editor.active_style.underline,
-                    "Gạch chân (Ctrl+U)",
-                ) {
-                    let next = !app.editor.active_style.underline;
-                    app.editor.apply_format(|s| s.underline = next);
-                }
-                if style_toggle(
-                    ui,
-                    egui::RichText::new("S").strikethrough().size(13.0),
-                    app.editor.active_style.strikethrough,
-                    "Gạch ngang chữ",
-                ) {
-                    let next = !app.editor.active_style.strikethrough;
-                    app.editor.apply_format(|s| s.strikethrough = next);
-                }
-                if icon_button(
-                    ui,
-                    IconKind::ClearFormatting,
-                    "Xóa toàn bộ định dạng về mặc định",
-                    false,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.editor.clear_formatting();
-                    app.set_status("Đã đưa chữ về định dạng mặc định");
-                }
-
-                for (rgb, tip) in [
-                    ([30, 41, 59], "Màu mặc định"),
-                    ([37, 99, 235], "Màu xanh"),
-                    ([220, 38, 38], "Màu đỏ"),
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
+                for (tab, label) in [
+                    (RibbonTab::File, "Tệp"),
+                    (RibbonTab::Home, "Trang đầu"),
+                    (RibbonTab::Insert, "Chèn"),
+                    (RibbonTab::Layout, "Bố trí"),
+                    (RibbonTab::View, "Hiển thị"),
                 ] {
-                    let selected = app.editor.active_style.color == rgb;
-                    let (c_rect, c_resp) =
-                        ui.allocate_exact_size(Vec2::new(16.0, 16.0), egui::Sense::click());
-                    ui.painter().circle_filled(
-                        c_rect.center(),
-                        6.0,
-                        Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
-                    );
-                    if selected {
-                        ui.painter().circle_stroke(
-                            c_rect.center(),
-                            8.0,
-                            Stroke::new(1.5_f32, theme.primary_accent),
-                        );
-                    }
-                    if c_resp.on_hover_text(tip).clicked() {
-                        app.editor.apply_format(|s| s.color = rgb);
-                    }
-                }
-
-                let hl_on = app.editor.active_style.highlight.is_some();
-                if icon_button(ui, IconKind::Highlight, "Tô sáng Highlight", hl_on, is_dark)
-                    .clicked()
-                {
-                    let next_hl = if hl_on { None } else { Some([254, 240, 138]) };
-                    app.editor.apply_format(|s| s.highlight = next_hl);
-                }
-                ui.separator();
-
-                let cur_align = app.editor.current_alignment();
-                for (align, icon, tip) in [
-                    (TextAlignment::Left, IconKind::AlignLeft, "Căn trái"),
-                    (TextAlignment::Center, IconKind::AlignCenter, "Căn giữa"),
-                    (TextAlignment::Right, IconKind::AlignRight, "Căn phải"),
-                    (
-                        TextAlignment::Justify,
-                        IconKind::AlignJustify,
-                        "Căn đều 2 bên",
-                    ),
-                ] {
-                    if icon_button(ui, icon, tip, cur_align == align, is_dark).clicked() {
-                        app.editor.set_alignment(align);
-                    }
-                }
-                ui.separator();
-                if icon_button(
-                    ui,
-                    IconKind::ListBullet,
-                    "Danh sách gạch đầu dòng (•)",
-                    false,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.editor.insert_bullet_item();
-                }
-                if icon_button(
-                    ui,
-                    IconKind::ListNumber,
-                    "Danh sách đánh số thứ tự (1, 2, 3)",
-                    false,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.editor.insert_numbered_item();
-                }
-                ui.separator();
-
-                if icon_button(
-                    ui,
-                    IconKind::PageBreak,
-                    "Chèn ngắt trang (Ctrl+Enter)",
-                    false,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.editor.insert_text(&PAGE_BREAK_CHAR.to_string());
-                    app.set_status("Đã chèn ngắt trang");
-                }
-                if icon_button(
-                    ui,
-                    IconKind::Search,
-                    "Tìm & Thay thế (Ctrl+F / Ctrl+H)",
-                    app.find_bar_open,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.find_bar_open = !app.find_bar_open;
-                    if app.find_bar_open {
-                        app.focus_find_input = true;
-                    }
-                }
-                if icon_button(
-                    ui,
-                    IconKind::Margins,
-                    "Góc căn lề A4",
-                    app.show_margins,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.show_margins = !app.show_margins;
-                }
-                if icon_button(
-                    ui,
-                    IconKind::Ruler,
-                    "Bật / Tắt thước kẻ ngang A4",
-                    app.show_ruler,
-                    is_dark,
-                )
-                .clicked()
-                {
-                    app.show_ruler = !app.show_ruler;
-                }
-
-                ui.separator();
-                for preset in [
-                    DocumentPresetStyle::Normal,
-                    DocumentPresetStyle::Heading1,
-                    DocumentPresetStyle::Heading2,
-                    DocumentPresetStyle::Heading3,
-                    DocumentPresetStyle::Quote,
-                ] {
-                    let is_active = match preset {
-                        DocumentPresetStyle::Normal => {
-                            (app.editor.active_style.font_size - 14.0).abs() < 0.5
-                                && !app.editor.active_style.bold
-                        }
-                        DocumentPresetStyle::Heading1 => {
-                            (app.editor.active_style.font_size - 22.0).abs() < 0.5
-                                && app.editor.active_style.bold
-                        }
-                        DocumentPresetStyle::Heading2 => {
-                            (app.editor.active_style.font_size - 18.0).abs() < 0.5
-                                && app.editor.active_style.bold
-                        }
-                        DocumentPresetStyle::Heading3 => {
-                            (app.editor.active_style.font_size - 16.0).abs() < 0.5
-                                && app.editor.active_style.bold
-                        }
-                        DocumentPresetStyle::Quote => app.editor.active_style.italic,
-                    };
-                    let text_color = if is_active {
-                        theme.primary_accent
-                    } else {
-                        theme.text_main
-                    };
-                    let bg_color = if is_active {
-                        if is_dark {
-                            Color32::from_rgb(30, 58, 138)
-                        } else {
-                            Color32::from_rgb(238, 242, 255)
-                        }
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let btn = egui::Button::new(
-                        egui::RichText::new(preset.label())
-                            .size(11.5)
-                            .color(text_color),
-                    )
-                    .fill(bg_color)
-                    .stroke(if is_active {
-                        Stroke::new(1.0_f32, theme.primary_accent)
-                    } else {
-                        Stroke::NONE
-                    })
-                    .rounding(5.0);
-                    if ui
-                        .add(btn)
-                        .on_hover_text(format!("Áp dụng kiểu {}", preset.label()))
-                        .clicked()
-                    {
-                        app.editor.apply_preset_style(preset);
-                        app.set_status(&format!("Đã áp dụng: {}", preset.label()));
+                    if ribbon_tab_button(ui, label, app.active_ribbon_tab == tab, theme) {
+                        app.active_ribbon_tab = tab;
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let zoom_pct = format!("{:.0}%", app.zoom * 100.0);
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if !app.focus_mode {
+                        if icon_button(
+                            ui,
+                            IconKind::PanelRight,
+                            "Ẩn / Hiện bảng Định dạng phải",
+                            app.show_inspector_panel,
+                            is_dark,
+                        )
+                        .clicked()
+                        {
+                            app.show_inspector_panel = !app.show_inspector_panel;
+                        }
+                        if icon_button(
+                            ui,
+                            IconKind::PanelLeft,
+                            "Ẩn / Hiện bảng Điều hướng trái",
+                            app.show_nav_panel,
+                            is_dark,
+                        )
+                        .clicked()
+                        {
+                            app.show_nav_panel = !app.show_nav_panel;
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new("Đang chỉnh sửa")
+                            .size(11.5)
+                            .color(theme.text_muted),
+                    );
+                });
+            });
+
+            // Đường kẻ phân chia giữa Tab và Công cụ Ribbon
+            let sep_rect = ui.available_rect_before_wrap();
+            ui.painter().line_segment(
+                [
+                    Pos2::new(sep_rect.min.x - 16.0, sep_rect.min.y),
+                    Pos2::new(sep_rect.max.x + 16.0, sep_rect.min.y),
+                ],
+                Stroke::new(1.0_f32, theme.border_color),
+            );
+            ui.add_space(6.0);
+
+            // Hàng 2: Nội dung công cụ theo Tab đang chọn
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+                ui.style_mut().spacing.interact_size.y = 26.0;
+
+                match app.active_ribbon_tab {
+                    RibbonTab::Home => render_home_ribbon_tools(ui, ctx, app, theme),
+                    RibbonTab::File => render_file_ribbon_tools(ui, ctx, app, theme),
+                    RibbonTab::Insert => render_insert_ribbon_tools(ui, app, theme),
+                    RibbonTab::Layout => render_layout_ribbon_tools(ui, app, theme),
+                    RibbonTab::View => render_view_ribbon_tools(ui, ctx, app, theme),
+                }
+
+                // Nút Chế độ tập trung (Focus mode) luôn nằm bên phải
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let focus_bg = if app.focus_mode {
+                        theme.accent_tint
+                    } else {
+                        theme.input_bg
+                    };
+                    let focus_stroke = if app.focus_mode {
+                        Stroke::new(1.0_f32, theme.primary_accent)
+                    } else {
+                        Stroke::new(1.0_f32, theme.border_color)
+                    };
+                    let focus_fg = if app.focus_mode {
+                        theme.primary_accent
+                    } else {
+                        theme.text_main
+                    };
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new(zoom_pct)
-                                    .size(12.0)
-                                    .color(theme.text_main),
+                                egui::RichText::new(if app.focus_mode {
+                                    "Thoát tập trung"
+                                } else {
+                                    "Chế độ tập trung"
+                                })
+                                .size(11.5)
+                                .color(focus_fg)
+                                .strong(),
                             )
-                            .rounding(6.0),
+                            .fill(focus_bg)
+                            .stroke(focus_stroke)
+                            .rounding(Rounding::same(7.0))
+                            .min_size(Vec2::new(124.0, 34.0)),
                         )
-                        .on_hover_text("Đặt lại 100%")
+                        .on_hover_text("Ẩn thanh điều hướng hai bên để tập trung soạn thảo")
                         .clicked()
                     {
-                        app.zoom = 1.0;
+                        app.focus_mode = !app.focus_mode;
                     }
-                    ui.add(egui::Slider::new(&mut app.zoom, 0.6_f32..=1.5_f32).show_value(false));
                 });
             });
+            ui.add_space(6.0);
         });
+}
+
+fn render_home_ribbon_tools(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    app: &mut MyWordApp,
+    theme: &ThemePalette,
+) {
+    let is_dark = theme.is_dark;
+
+    // Nhóm 1: Hoàn tác / Làm lại
+    ui.add_enabled_ui(!app.editor.undo_stack.is_empty(), |ui| {
+        if icon_button(ui, IconKind::Undo, "Hoàn tác (Ctrl+Z)", false, is_dark).clicked()
+            && app.editor.undo()
+        {
+            app.set_status("Đã hoàn tác");
+        }
+    });
+    ui.add_enabled_ui(!app.editor.redo_stack.is_empty(), |ui| {
+        if icon_button(ui, IconKind::Redo, "Làm lại (Ctrl+Y)", false, is_dark).clicked()
+            && app.editor.redo()
+        {
+            app.set_status("Đã làm lại");
+        }
+    });
+    vertical_divider(ui, 38.0, theme.border_color);
+
+    // Nhóm 2: Bảng tạm
+    let has_selection = app.editor.selected_range().is_some();
+    ui.add_enabled_ui(has_selection, |ui| {
+        if icon_button(ui, IconKind::Cut, "Cắt (Ctrl+X)", false, is_dark).clicked() {
+            app.cut_selection_to_clipboard(ctx);
+        }
+        if icon_button(ui, IconKind::Copy, "Sao chép (Ctrl+C)", false, is_dark).clicked() {
+            app.copy_selection_to_clipboard(ctx);
+        }
+    });
+    ui.add_enabled_ui(!app.editor.clipboard_buffer.is_empty(), |ui| {
+        if icon_button(ui, IconKind::Paste, "Dán (Ctrl+V)", false, is_dark).clicked() {
+            let text = app.editor.clipboard_buffer.clone();
+            app.editor.insert_text(&text);
+        }
+    });
+    let fp_active = app.editor.format_painter_style.is_some();
+    if icon_button(
+        ui,
+        IconKind::FormatPainter,
+        "Sao chép định dạng (Format Painter)",
+        fp_active,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.editor.toggle_format_painter();
+        if app.editor.format_painter_style.is_some() {
+            app.set_status("Đã chép định dạng — quét chuột lên chữ để áp dụng");
+        } else {
+            app.set_status("Đã hủy sao chép định dạng");
+        }
+    }
+    vertical_divider(ui, 38.0, theme.border_color);
+
+    // Nhóm 3: Phông chữ & Định dạng Rich Text
+    if ui
+        .add(
+            egui::Button::new(egui::RichText::new("−").size(13.0))
+                .fill(theme.input_bg)
+                .rounding(5.0),
+        )
+        .on_hover_text("Giảm cỡ chữ")
+        .clicked()
+    {
+        let next = (app.editor.active_style.font_size - 1.0).max(8.0);
+        app.editor.apply_format(|s| s.font_size = next);
+    }
+    ui.label(
+        egui::RichText::new(format!("{:.0} pt", app.editor.active_style.font_size))
+            .size(12.0)
+            .color(theme.text_main)
+            .strong(),
+    );
+    if ui
+        .add(
+            egui::Button::new(egui::RichText::new("+").size(13.0))
+                .fill(theme.input_bg)
+                .rounding(5.0),
+        )
+        .on_hover_text("Tăng cỡ chữ")
+        .clicked()
+    {
+        let next = (app.editor.active_style.font_size + 1.0).min(48.0);
+        app.editor.apply_format(|s| s.font_size = next);
+    }
+
+    let style_toggle = |ui: &mut egui::Ui, label: egui::RichText, active: bool, tip: &str| {
+        let mut btn = egui::Button::new(label)
+            .min_size(Vec2::new(26.0, 26.0))
+            .rounding(5.0);
+        if active {
+            btn = btn
+                .fill(theme.accent_tint)
+                .stroke(Stroke::new(1.0_f32, theme.accent_border));
+        } else {
+            btn = btn.fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
+        }
+        ui.add(btn).on_hover_text(tip).clicked()
+    };
+
+    if style_toggle(
+        ui,
+        egui::RichText::new("B")
+            .strong()
+            .size(13.0)
+            .color(if app.editor.active_style.bold {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            }),
+        app.editor.active_style.bold,
+        "In đậm (Ctrl+B)",
+    ) {
+        let next = !app.editor.active_style.bold;
+        app.editor.apply_format(|s| s.bold = next);
+    }
+    if style_toggle(
+        ui,
+        egui::RichText::new("I")
+            .italics()
+            .size(13.0)
+            .color(if app.editor.active_style.italic {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            }),
+        app.editor.active_style.italic,
+        "In nghiêng (Ctrl+I)",
+    ) {
+        let next = !app.editor.active_style.italic;
+        app.editor.apply_format(|s| s.italic = next);
+    }
+    if style_toggle(
+        ui,
+        egui::RichText::new("U").underline().size(13.0).color(
+            if app.editor.active_style.underline {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            },
+        ),
+        app.editor.active_style.underline,
+        "Gạch chân (Ctrl+U)",
+    ) {
+        let next = !app.editor.active_style.underline;
+        app.editor.apply_format(|s| s.underline = next);
+    }
+    if style_toggle(
+        ui,
+        egui::RichText::new("S").strikethrough().size(13.0).color(
+            if app.editor.active_style.strikethrough {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            },
+        ),
+        app.editor.active_style.strikethrough,
+        "Gạch ngang chữ",
+    ) {
+        let next = !app.editor.active_style.strikethrough;
+        app.editor.apply_format(|s| s.strikethrough = next);
+    }
+    if icon_button(
+        ui,
+        IconKind::ClearFormatting,
+        "Xóa toàn bộ định dạng về mặc định",
+        false,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.editor.clear_formatting();
+        app.set_status("Đã đưa chữ về định dạng mặc định");
+    }
+
+    for (rgb, tip) in [
+        ([35, 43, 60], "Màu mặc định"),
+        ([64, 89, 220], "Màu xanh thương hiệu"),
+        ([220, 38, 38], "Màu đỏ"),
+    ] {
+        let selected = app.editor.active_style.color == rgb;
+        let (c_rect, c_resp) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), egui::Sense::click());
+        ui.painter().circle_filled(
+            c_rect.center(),
+            5.5,
+            Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+        );
+        if selected {
+            ui.painter().circle_stroke(
+                c_rect.center(),
+                7.5,
+                Stroke::new(1.5_f32, theme.primary_accent),
+            );
+        }
+        if c_resp.on_hover_text(tip).clicked() {
+            app.editor.apply_format(|s| s.color = rgb);
+        }
+    }
+
+    let hl_on = app.editor.active_style.highlight.is_some();
+    if icon_button(ui, IconKind::Highlight, "Tô sáng Highlight", hl_on, is_dark).clicked() {
+        let next_hl = if hl_on { None } else { Some([244, 215, 107]) };
+        app.editor.apply_format(|s| s.highlight = next_hl);
+    }
+    vertical_divider(ui, 38.0, theme.border_color);
+
+    // Nhóm 4: Đoạn văn (Căn lề & Danh sách)
+    let cur_align = app.editor.current_alignment();
+    for (align, icon, tip) in [
+        (TextAlignment::Left, IconKind::AlignLeft, "Căn trái"),
+        (TextAlignment::Center, IconKind::AlignCenter, "Căn giữa"),
+        (TextAlignment::Right, IconKind::AlignRight, "Căn phải"),
+        (
+            TextAlignment::Justify,
+            IconKind::AlignJustify,
+            "Căn đều 2 bên",
+        ),
+    ] {
+        if icon_button(ui, icon, tip, cur_align == align, is_dark).clicked() {
+            app.editor.set_alignment(align);
+        }
+    }
+    if icon_button(
+        ui,
+        IconKind::ListBullet,
+        "Danh sách gạch đầu dòng (•)",
+        false,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.editor.insert_bullet_item();
+    }
+    if icon_button(
+        ui,
+        IconKind::ListNumber,
+        "Danh sách đánh số thứ tự (1, 2, 3)",
+        false,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.editor.insert_numbered_item();
+    }
+    vertical_divider(ui, 38.0, theme.border_color);
+
+    // Nhóm 5: Thẻ Kiểu văn bản kiểu Figma (Aa Thông thường, Aa Tiêu đề 1, Aa Tiêu đề 2...)
+    for preset in [
+        DocumentPresetStyle::Normal,
+        DocumentPresetStyle::Heading1,
+        DocumentPresetStyle::Heading2,
+        DocumentPresetStyle::Heading3,
+    ] {
+        let is_active = is_preset_active(&app.editor.active_style, preset);
+        let fill = if is_active {
+            theme.accent_tint
+        } else {
+            theme.card_bg
+        };
+        let stroke = Stroke::new(
+            1.0_f32,
+            if is_active {
+                theme.accent_border
+            } else {
+                theme.border_color
+            },
+        );
+        let (card_rect, resp) = ui.allocate_exact_size(Vec2::new(80.0, 42.0), egui::Sense::click());
+        ui.painter()
+            .rect(card_rect, Rounding::same(6.0), fill, stroke);
+        let aa_col = if is_active {
+            theme.primary_accent
+        } else {
+            theme.text_main
+        };
+        let label_col = if is_active {
+            theme.primary_accent
+        } else {
+            theme.text_muted
+        };
+        ui.painter().text(
+            Pos2::new(card_rect.min.x + 8.0, card_rect.min.y + 6.0),
+            egui::Align2::LEFT_TOP,
+            "Aa",
+            FontId::proportional(15.0),
+            aa_col,
+        );
+        ui.painter().text(
+            Pos2::new(card_rect.min.x + 8.0, card_rect.max.y - 6.0),
+            egui::Align2::LEFT_BOTTOM,
+            preset.label(),
+            FontId::proportional(9.5),
+            label_col,
+        );
+        if resp
+            .on_hover_text(format!("Áp dụng kiểu {}", preset.label()))
+            .clicked()
+        {
+            app.editor.apply_preset_style(preset);
+            app.set_status(&format!("Đã áp dụng: {}", preset.label()));
+        }
+    }
+    vertical_divider(ui, 38.0, theme.border_color);
+
+    // Nhóm 6: Chèn nhanh
+    if icon_button(
+        ui,
+        IconKind::PageBreak,
+        "Chèn ngắt trang (Ctrl+Enter)",
+        false,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.editor.insert_text(&PAGE_BREAK_CHAR.to_string());
+        app.set_status("Đã chèn ngắt trang");
+    }
+    if icon_button(
+        ui,
+        IconKind::Search,
+        "Tìm & Thay thế (Ctrl+F / Ctrl+H)",
+        app.find_bar_open,
+        is_dark,
+    )
+    .clicked()
+    {
+        app.find_bar_open = !app.find_bar_open;
+        if app.find_bar_open {
+            app.focus_find_input = true;
+        }
+    }
+}
+
+fn render_file_ribbon_tools(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    app: &mut MyWordApp,
+    theme: &ThemePalette,
+) {
+    let pill_btn = |ui: &mut egui::Ui, text: &str, primary: bool| {
+        let mut btn = egui::Button::new(egui::RichText::new(text).size(12.0).color(if primary {
+            Color32::WHITE
+        } else {
+            theme.text_main
+        }))
+        .rounding(Rounding::same(6.0))
+        .min_size(Vec2::new(0.0, 32.0));
+        if primary {
+            btn = btn.fill(theme.primary_accent);
+        } else {
+            btn = btn
+                .fill(theme.card_bg)
+                .stroke(Stroke::new(1.0_f32, theme.border_color));
+        }
+        ui.add(btn).clicked()
+    };
+
+    if pill_btn(ui, "Tài liệu mới (Ctrl+N)", false) {
+        app.trigger_new_document();
+    }
+    if pill_btn(ui, "Mở tệp... (Ctrl+O)", false) {
+        app.trigger_open_dialog(ctx.clone());
+    }
+    if pill_btn(ui, "Lưu tệp (Ctrl+S)", true) {
+        app.trigger_save(ctx.clone(), false);
+    }
+    if pill_btn(ui, "Lưu thành... (Ctrl+Shift+S)", false) {
+        app.trigger_save(ctx.clone(), true);
+    }
+    if pill_btn(ui, "Màn hình chào mừng", false) {
+        app.show_startup_modal = true;
+    }
+}
+
+fn render_insert_ribbon_tools(ui: &mut egui::Ui, app: &mut MyWordApp, theme: &ThemePalette) {
+    let pill_btn = |ui: &mut egui::Ui, text: &str| {
+        ui.add(
+            egui::Button::new(egui::RichText::new(text).size(12.0).color(theme.text_main))
+                .fill(theme.card_bg)
+                .stroke(Stroke::new(1.0_f32, theme.border_color))
+                .rounding(Rounding::same(6.0))
+                .min_size(Vec2::new(0.0, 32.0)),
+        )
+        .clicked()
+    };
+
+    if pill_btn(ui, "Ngắt trang (Ctrl+Enter)") {
+        app.editor.insert_text(&PAGE_BREAK_CHAR.to_string());
+        app.set_status("Đã chèn ngắt trang");
+    }
+    if pill_btn(ui, "Gạch đầu dòng (•)") {
+        app.editor.insert_bullet_item();
+    }
+    if pill_btn(ui, "Danh sách số (1. 2. 3.)") {
+        app.editor.insert_numbered_item();
+    }
+    if pill_btn(ui, "Đường phân cách") {
+        app.editor
+            .insert_text("\n────────────────────────────────────\n");
+    }
+}
+
+fn render_layout_ribbon_tools(ui: &mut egui::Ui, app: &mut MyWordApp, theme: &ThemePalette) {
+    let toggle_btn = |ui: &mut egui::Ui, text: &str, active: bool| {
+        ui.add(
+            egui::Button::new(egui::RichText::new(text).size(12.0).color(if active {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            }))
+            .fill(if active {
+                theme.accent_tint
+            } else {
+                theme.card_bg
+            })
+            .stroke(Stroke::new(
+                1.0_f32,
+                if active {
+                    theme.accent_border
+                } else {
+                    theme.border_color
+                },
+            ))
+            .rounding(Rounding::same(6.0))
+            .min_size(Vec2::new(0.0, 32.0)),
+        )
+        .clicked()
+    };
+
+    if toggle_btn(ui, "Thước kẻ A4", app.show_ruler) {
+        app.show_ruler = !app.show_ruler;
+    }
+    if toggle_btn(ui, "Góc căn lề trang", app.show_margins) {
+        app.show_margins = !app.show_margins;
+    }
+    vertical_divider(ui, 32.0, theme.border_color);
+    let cur = app.editor.current_alignment();
+    for (align, label) in [
+        (TextAlignment::Left, "Căn trái"),
+        (TextAlignment::Center, "Căn giữa"),
+        (TextAlignment::Right, "Căn phải"),
+        (TextAlignment::Justify, "Căn đều"),
+    ] {
+        if toggle_btn(ui, label, cur == align) {
+            app.editor.set_alignment(align);
+        }
+    }
+}
+
+fn render_view_ribbon_tools(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    app: &mut MyWordApp,
+    theme: &ThemePalette,
+) {
+    let toggle_btn = |ui: &mut egui::Ui, text: &str, active: bool| {
+        ui.add(
+            egui::Button::new(egui::RichText::new(text).size(12.0).color(if active {
+                theme.primary_accent
+            } else {
+                theme.text_main
+            }))
+            .fill(if active {
+                theme.accent_tint
+            } else {
+                theme.card_bg
+            })
+            .stroke(Stroke::new(
+                1.0_f32,
+                if active {
+                    theme.accent_border
+                } else {
+                    theme.border_color
+                },
+            ))
+            .rounding(Rounding::same(6.0))
+            .min_size(Vec2::new(0.0, 32.0)),
+        )
+        .clicked()
+    };
+
+    if toggle_btn(ui, "Bảng Điều hướng", app.show_nav_panel && !app.focus_mode) {
+        app.focus_mode = false;
+        app.show_nav_panel = !app.show_nav_panel;
+    }
+    if toggle_btn(
+        ui,
+        "Bảng Định dạng",
+        app.show_inspector_panel && !app.focus_mode,
+    ) {
+        app.focus_mode = false;
+        app.show_inspector_panel = !app.show_inspector_panel;
+    }
+    if toggle_btn(ui, "Giao diện Tối", app.dark_workspace) {
+        app.dark_workspace = !app.dark_workspace;
+        ThemePalette::from_mode(app.dark_workspace).apply(ctx);
+    }
+    vertical_divider(ui, 32.0, theme.border_color);
+    for (z, label) in [(0.75, "75%"), (1.0, "100%"), (1.25, "125%"), (1.5, "150%")] {
+        if toggle_btn(ui, label, (app.zoom - z).abs() < 0.05) {
+            app.set_zoom(z);
+        }
+    }
+}
+
+fn is_preset_active(style: &crate::document::TextStyle, preset: DocumentPresetStyle) -> bool {
+    match preset {
+        DocumentPresetStyle::Normal => (style.font_size - 14.0).abs() < 0.5 && !style.bold,
+        DocumentPresetStyle::Heading1 => (style.font_size - 22.0).abs() < 0.5 && style.bold,
+        DocumentPresetStyle::Heading2 => (style.font_size - 18.0).abs() < 0.5 && style.bold,
+        DocumentPresetStyle::Heading3 => (style.font_size - 16.0).abs() < 0.5 && style.bold,
+        DocumentPresetStyle::Quote => style.italic,
+    }
 }
 
 pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
@@ -663,7 +1070,7 @@ pub fn render_find_replace_bar(ctx: &egui::Context, app: &mut MyWordApp, theme: 
 
                 ui.separator();
                 if !app.replace_bar_open {
-                    if ui.button("Mở Thay thế ▾").clicked() {
+                    if ui.button("Thay thế...").clicked() {
                         app.replace_bar_open = true;
                     }
                 } else {
@@ -737,9 +1144,9 @@ pub fn render_recovery_banner(ctx: &egui::Context, app: &mut MyWordApp, theme: &
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(
-                        "⚠️ Phát hiện bản sao lưu tự động chưa được lưu từ phiên làm việc trước.",
+                        "Phát hiện bản sao lưu tự động chưa được lưu từ phiên làm việc trước.",
                     )
-                    .size(13.0)
+                    .size(12.5)
                     .color(if theme.is_dark {
                         Color32::from_rgb(253, 230, 138)
                     } else {
@@ -855,6 +1262,69 @@ pub fn render_confirm_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
     }
 }
 
+fn build_brand_plan_sample() -> crate::editor::EditorState {
+    use crate::document::{StyleSpan, TextStyle};
+
+    let h1 = TextStyle {
+        bold: true,
+        font_size: 22.0,
+        color: [35, 43, 60],
+        ..Default::default()
+    };
+    let h2 = TextStyle {
+        bold: true,
+        font_size: 18.0,
+        color: [64, 89, 220],
+        ..Default::default()
+    };
+    let body = TextStyle {
+        font_size: 14.0,
+        color: [35, 43, 60],
+        ..Default::default()
+    };
+
+    let sections: [(&str, TextStyle); 7] = [
+        ("Kế hoạch thương hiệu 2026\n", h1),
+        ("Xây dựng bản sắc. Kết nối giá trị. Tạo dấu ấn.\n\n", body),
+        ("01 Tầm nhìn & định hướng\n", h2),
+        (
+            "Một thương hiệu tốt không chỉ được nhìn thấy, mà còn được ghi nhớ. Năm 2026, chúng ta tập trung xây dựng trải nghiệm nhất quán, chân thật và có ý nghĩa tại mọi điểm chạm.\n\n",
+            body,
+        ),
+        ("02 Mục tiêu chiến lược\n", h2),
+        (
+            "Tăng mức độ nhận diện và xây dựng sự tin tưởng dài hạn thông qua những sản phẩm có chiều sâu và tốc độ vượt trội.\n\n",
+            body,
+        ),
+        ("03 Kế hoạch triển khai\n", h2),
+    ];
+
+    let mut content = String::new();
+    let mut spans = Vec::new();
+    for (text, style) in sections {
+        let start = content.len();
+        content.push_str(text);
+        let end = content.len();
+        spans.push(StyleSpan { start, end, style });
+    }
+    let tail_start = content.len();
+    content.push_str("• Giai đoạn 1: Hoàn thiện trải nghiệm soạn thảo tiếng Việt Telex.\n• Giai đoạn 2: Chuẩn hóa bố cục A4 và xuất bản tài liệu văn phòng.");
+    spans.push(StyleSpan {
+        start: tail_start,
+        end: content.len(),
+        style: body,
+    });
+
+    let para_count = content.split(['\n', PAGE_BREAK_CHAR]).count().max(1);
+    let mut ed = crate::editor::EditorState::new_empty();
+    ed.content = content;
+    ed.spans = spans;
+    ed.para_alignments = vec![TextAlignment::Left; para_count];
+    ed.is_dirty = false;
+    ed.mark_content_changed();
+    ed
+}
+
 pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
     if !app.show_startup_modal {
         return;
@@ -863,118 +1333,511 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
     let mut action_open = false;
     let mut action_new = false;
     let mut action_sample = false;
+    let mut action_plan = false;
     let mut action_recover = false;
     let mut action_close = false;
 
-    egui::Window::new("Khởi động MyWord")
+    // Lớp phủ mờ nền phía sau modal
+    let screen = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("startup_backdrop"))
+        .fixed_pos(screen.min)
+        .order(egui::Order::Middle)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+            ui.painter().rect_filled(
+                rect,
+                Rounding::ZERO,
+                Color32::from_rgba_unmultiplied(23, 33, 59, 96),
+            );
+        });
+
+    let modal_w = (screen.width() - 48.0).clamp(540.0, 860.0);
+    let modal_h = (screen.height() - 48.0).clamp(440.0, 560.0);
+
+    egui::Window::new("startup_welcome_modal")
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .order(egui::Order::Foreground)
+        .fixed_size(Vec2::new(modal_w, modal_h))
         .frame(
-            egui::Frame::window(&ctx.style())
+            egui::Frame::none()
                 .fill(theme.surface_bg)
+                .rounding(Rounding::same(14.0))
                 .stroke(Stroke::new(1.0_f32, theme.border_color))
-                .inner_margin(egui::Margin::same(20.0)),
+                .shadow(egui::epaint::Shadow {
+                    offset: Vec2::new(0.0, 12.0),
+                    blur: 32.0,
+                    spread: 0.0,
+                    color: Color32::from_rgba_unmultiplied(20, 31, 61, 48),
+                }),
         )
         .show(ctx, |ui| {
-            ui.set_width(380.0);
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    draw_app_logo(ui);
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                // Cột điều hướng trái (#F7F8FC)
+                let left_w = 192.0;
+                egui::Frame::none()
+                    .fill(if theme.is_dark {
+                        theme.sidebar_bg
+                    } else {
+                        Color32::from_rgb(247, 248, 252)
+                    })
+                    .rounding(Rounding {
+                        nw: 14.0,
+                        sw: 14.0,
+                        ne: 0.0,
+                        se: 0.0,
+                    })
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(left_w - 36.0);
+                        ui.set_height(modal_h - 36.0);
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                draw_app_logo(ui);
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("my word")
+                                        .size(17.5)
+                                        .strong()
+                                        .color(theme.text_main),
+                                );
+                            });
+                            ui.add_space(22.0);
+                            ui.label(
+                                egui::RichText::new("KHÔNG GIAN CỦA BẠN")
+                                    .size(9.5)
+                                    .strong()
+                                    .color(theme.text_muted),
+                            );
+                            ui.add_space(10.0);
+
+                            for (tab, icon, label) in [
+                                (StartupNavTab::Recent, IconKind::Clock, "Gần đây"),
+                                (StartupNavTab::Templates, IconKind::Grid, "Kho mẫu"),
+                            ] {
+                                let selected = app.startup_nav_tab == tab;
+                                let bg = if selected {
+                                    theme.accent_tint
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                let fg = if selected {
+                                    theme.primary_accent
+                                } else {
+                                    theme.text_main
+                                };
+                                let (row_r, resp) = ui.allocate_exact_size(
+                                    Vec2::new(left_w - 36.0, 34.0),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(row_r, Rounding::same(7.0), bg);
+                                let icon_r = Rect::from_min_size(
+                                    Pos2::new(row_r.min.x + 10.0, row_r.center().y - 8.0),
+                                    Vec2::splat(16.0),
+                                );
+                                crate::icons::draw_icon(ui.painter(), icon_r, icon, fg);
+                                ui.painter().text(
+                                    Pos2::new(row_r.min.x + 34.0, row_r.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    label,
+                                    FontId::proportional(12.5),
+                                    fg,
+                                );
+                                if resp.clicked() {
+                                    app.startup_nav_tab = tab;
+                                }
+                                ui.add_space(4.0);
+                            }
+
+                            let (local_r, local_resp) = ui.allocate_exact_size(
+                                Vec2::new(left_w - 36.0, 34.0),
+                                egui::Sense::click(),
+                            );
+                            if local_resp.hovered() {
+                                ui.painter().rect_filled(
+                                    local_r,
+                                    Rounding::same(7.0),
+                                    theme.input_bg,
+                                );
+                            }
+                            let folder_r = Rect::from_min_size(
+                                Pos2::new(local_r.min.x + 10.0, local_r.center().y - 8.0),
+                                Vec2::splat(16.0),
+                            );
+                            crate::icons::draw_icon(
+                                ui.painter(),
+                                folder_r,
+                                IconKind::FolderOpen,
+                                theme.text_main,
+                            );
+                            ui.painter().text(
+                                Pos2::new(local_r.min.x + 34.0, local_r.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                "Máy tính này",
+                                FontId::proportional(12.5),
+                                theme.text_main,
+                            );
+                            if local_resp.clicked() {
+                                action_open = true;
+                            }
+
+                            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                                ui.label(
+                                    egui::RichText::new("My Word 1.0 • Pure Rust")
+                                        .size(10.0)
+                                        .color(theme.text_muted),
+                                );
+                                ui.add_space(4.0);
+                                ui.separator();
+                            });
+                        });
+                    });
+
+                // Nội dung bên phải
+                egui::Frame::none()
+                    .fill(theme.surface_bg)
+                    .rounding(Rounding {
+                        nw: 0.0,
+                        sw: 0.0,
+                        ne: 14.0,
+                        se: 14.0,
+                    })
+                    .inner_margin(egui::Margin::same(24.0))
+                    .show(ui, |ui| {
+                        let right_w = modal_w - left_w - 48.0;
+                        ui.set_width(right_w);
+                        ui.set_height(modal_h - 48.0);
+
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Chào mừng đến với My Word")
+                                        .size(21.0)
+                                        .strong()
+                                        .color(theme.text_main),
+                                );
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Tiếp tục ý tưởng của bạn hoặc bắt đầu một trang viết mới.",
+                                    )
+                                    .size(12.5)
+                                    .color(theme.text_muted),
+                                );
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                                if icon_button(
+                                    ui,
+                                    IconKind::Close,
+                                    "Đóng (Esc)",
+                                    false,
+                                    theme.is_dark,
+                                )
+                                .clicked()
+                                {
+                                    action_close = true;
+                                }
+                            });
+                        });
+
+                        ui.add_space(18.0);
                         ui.label(
-                            egui::RichText::new("Bắt đầu làm việc")
-                                .size(17.0)
+                            egui::RichText::new("Bắt đầu mới")
+                                .size(13.5)
                                 .strong()
                                 .color(theme.text_main),
                         );
+                        ui.add_space(10.0);
+
+                        // 3 thẻ Bắt đầu mới kiểu Figma
+                        let card_gap = 12.0;
+                        let card_w = (right_w - card_gap * 2.0) / 3.0;
+                        let card_h = 108.0;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = card_gap;
+
+                            // Thẻ 1: Tài liệu trống
+                            let (c1, r1) = ui.allocate_exact_size(
+                                Vec2::new(card_w, card_h),
+                                egui::Sense::click(),
+                            );
+                            ui.painter().rect(
+                                c1,
+                                Rounding::same(9.0),
+                                theme.accent_tint,
+                                Stroke::new(1.0_f32, theme.accent_border),
+                            );
+                            let badge = Rect::from_min_size(
+                                Pos2::new(c1.min.x + 12.0, c1.min.y + 14.0),
+                                Vec2::new(34.0, 40.0),
+                            );
+                            ui.painter().rect(
+                                badge,
+                                Rounding::same(5.0),
+                                theme.surface_bg,
+                                Stroke::new(1.0_f32, theme.accent_border),
+                            );
+                            crate::icons::draw_icon(
+                                ui.painter(),
+                                badge.shrink(9.0),
+                                IconKind::Plus,
+                                theme.primary_accent,
+                            );
+                            ui.painter().text(
+                                Pos2::new(c1.min.x + 56.0, c1.min.y + 18.0),
+                                egui::Align2::LEFT_TOP,
+                                "Tài liệu trống",
+                                FontId::proportional(13.0),
+                                theme.text_main,
+                            );
+                            ui.painter().text(
+                                Pos2::new(c1.min.x + 56.0, c1.min.y + 38.0),
+                                egui::Align2::LEFT_TOP,
+                                "Viết theo cách của bạn",
+                                FontId::proportional(10.0),
+                                theme.text_muted,
+                            );
+                            ui.painter().text(
+                                Pos2::new(c1.min.x + 14.0, c1.max.y - 14.0),
+                                egui::Align2::LEFT_BOTTOM,
+                                "Ctrl + N",
+                                FontId::proportional(10.0),
+                                theme.primary_accent,
+                            );
+                            if r1.clicked() {
+                                action_new = true;
+                            }
+
+                            // Thẻ 2 & 3: Mẫu văn bản (Dùng chung helper vẽ thumbnail)
+                            for (title, sub, bar_col, is_plan) in [
+                                (
+                                    "Văn bản mẫu",
+                                    "Hướng dẫn Telex & Style",
+                                    theme.primary_accent,
+                                    false,
+                                ),
+                                (
+                                    "Kế hoạch 2026",
+                                    "Bố cục đề mục chuẩn",
+                                    Color32::from_rgb(62, 140, 119),
+                                    true,
+                                ),
+                            ] {
+                                let (c, r) = ui.allocate_exact_size(
+                                    Vec2::new(card_w, card_h),
+                                    egui::Sense::click(),
+                                );
+                                let stroke_col = if r.hovered() {
+                                    theme.primary_accent
+                                } else {
+                                    theme.border_color
+                                };
+                                ui.painter().rect(
+                                    c,
+                                    Rounding::same(9.0),
+                                    theme.surface_bg,
+                                    Stroke::new(1.0_f32, stroke_col),
+                                );
+                                let thumb = Rect::from_min_size(
+                                    Pos2::new(c.min.x + 12.0, c.min.y + 13.0),
+                                    Vec2::new(34.0, 42.0),
+                                );
+                                ui.painter().rect(
+                                    thumb,
+                                    Rounding::same(3.0),
+                                    theme.surface_bg,
+                                    Stroke::new(1.0_f32, theme.border_color),
+                                );
+                                ui.painter().rect_filled(
+                                    Rect::from_min_size(
+                                        Pos2::new(thumb.min.x + 5.0, thumb.min.y + 6.0),
+                                        Vec2::new(24.0, 4.0),
+                                    ),
+                                    Rounding::same(1.0),
+                                    bar_col,
+                                );
+                                for dy in [16.0, 22.0, 28.0] {
+                                    ui.painter().rect_filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(thumb.min.x + 5.0, thumb.min.y + dy),
+                                            Vec2::new(if dy > 25.0 { 15.0 } else { 22.0 }, 2.0),
+                                        ),
+                                        Rounding::ZERO,
+                                        theme.border_color,
+                                    );
+                                }
+                                ui.painter().text(
+                                    Pos2::new(c.min.x + 56.0, c.min.y + 18.0),
+                                    egui::Align2::LEFT_TOP,
+                                    title,
+                                    FontId::proportional(13.0),
+                                    theme.text_main,
+                                );
+                                ui.painter().text(
+                                    Pos2::new(c.min.x + 56.0, c.min.y + 38.0),
+                                    egui::Align2::LEFT_TOP,
+                                    sub,
+                                    FontId::proportional(10.0),
+                                    theme.text_muted,
+                                );
+                                ui.painter().text(
+                                    Pos2::new(c.min.x + 14.0, c.max.y - 14.0),
+                                    egui::Align2::LEFT_BOTTOM,
+                                    "Dùng mẫu này",
+                                    FontId::proportional(10.0),
+                                    theme.text_muted,
+                                );
+                                if r.clicked() {
+                                    if is_plan {
+                                        action_plan = true;
+                                    } else {
+                                        action_sample = true;
+                                    }
+                                }
+                            }
+                        });
+
+                        ui.add_space(22.0);
                         ui.label(
-                            egui::RichText::new(
-                                "Chọn tệp văn bản hoặc bắt đầu trang soạn thảo mới",
-                            )
-                            .size(12.0)
-                            .color(theme.text_muted),
+                            egui::RichText::new("Tài liệu & Khôi phục")
+                                .size(13.5)
+                                .strong()
+                                .color(theme.text_main),
                         );
+                        ui.add_space(8.0);
+
+                        if app.show_recovery_banner {
+                            let (rec_r, rec_resp) = ui.allocate_exact_size(
+                                Vec2::new(right_w, 54.0),
+                                egui::Sense::click(),
+                            );
+                            ui.painter().rect(
+                                rec_r,
+                                Rounding::same(7.0),
+                                theme.accent_tint,
+                                Stroke::new(1.0_f32, theme.accent_border),
+                            );
+                            ui.painter().text(
+                                Pos2::new(rec_r.min.x + 16.0, rec_r.min.y + 12.0),
+                                egui::Align2::LEFT_TOP,
+                                "Khôi phục bản sao lưu tự động (.doc / .mwd)",
+                                FontId::proportional(12.5),
+                                theme.text_main,
+                            );
+                            ui.painter().text(
+                                Pos2::new(rec_r.min.x + 16.0, rec_r.min.y + 31.0),
+                                egui::Align2::LEFT_TOP,
+                                "Phát hiện nội dung chưa lưu từ phiên làm việc trước",
+                                FontId::proportional(10.5),
+                                theme.text_muted,
+                            );
+                            ui.painter().text(
+                                Pos2::new(rec_r.max.x - 16.0, rec_r.center().y),
+                                egui::Align2::RIGHT_CENTER,
+                                "Khôi phục ngay",
+                                FontId::proportional(11.5),
+                                theme.primary_accent,
+                            );
+                            if rec_resp.clicked() {
+                                action_recover = true;
+                            }
+                            ui.add_space(8.0);
+                        }
+
+                        // Hàng mở tài liệu từ máy
+                        let (open_row, open_row_resp) =
+                            ui.allocate_exact_size(Vec2::new(right_w, 52.0), egui::Sense::click());
+                        ui.painter().rect(
+                            open_row,
+                            Rounding::same(7.0),
+                            if open_row_resp.hovered() {
+                                theme.card_bg
+                            } else {
+                                theme.surface_bg
+                            },
+                            Stroke::new(1.0_f32, theme.border_color),
+                        );
+                        let f_icon_r = Rect::from_min_size(
+                            Pos2::new(open_row.min.x + 14.0, open_row.center().y - 10.0),
+                            Vec2::splat(20.0),
+                        );
+                        crate::icons::draw_icon(
+                            ui.painter(),
+                            f_icon_r,
+                            IconKind::PageDoc,
+                            theme.primary_accent,
+                        );
+                        ui.painter().text(
+                            Pos2::new(open_row.min.x + 44.0, open_row.min.y + 11.0),
+                            egui::Align2::LEFT_TOP,
+                            "Mở tệp tài liệu có sẵn trên máy tính",
+                            FontId::proportional(12.5),
+                            theme.text_main,
+                        );
+                        ui.painter().text(
+                            Pos2::new(open_row.min.x + 44.0, open_row.min.y + 30.0),
+                            egui::Align2::LEFT_TOP,
+                            "Hỗ trợ định dạng .mwd, .doc, .txt, .md",
+                            FontId::proportional(10.5),
+                            theme.text_muted,
+                        );
+                        if open_row_resp.clicked() {
+                            action_open = true;
+                        }
+
+                        // Footer Modal
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                            ui.horizontal(|ui| {
+                                let browse_btn = egui::Button::new(
+                                    egui::RichText::new("Duyệt máy tính")
+                                        .size(12.5)
+                                        .color(theme.text_main),
+                                )
+                                .fill(theme.surface_bg)
+                                .stroke(Stroke::new(1.0_f32, theme.border_color))
+                                .rounding(Rounding::same(7.0))
+                                .min_size(Vec2::new(130.0, 34.0));
+                                if ui.add(browse_btn).clicked() {
+                                    action_open = true;
+                                }
+
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let cta_btn = egui::Button::new(
+                                            egui::RichText::new("Bắt đầu viết")
+                                                .size(12.5)
+                                                .color(Color32::WHITE)
+                                                .strong(),
+                                        )
+                                        .fill(theme.primary_accent)
+                                        .rounding(Rounding::same(7.0))
+                                        .min_size(Vec2::new(124.0, 34.0));
+                                        if ui.add(cta_btn).clicked() {
+                                            action_new = true;
+                                        }
+
+                                        let cancel_btn = egui::Button::new(
+                                            egui::RichText::new("Bỏ qua")
+                                                .size(12.5)
+                                                .color(theme.text_main),
+                                        )
+                                        .fill(theme.surface_bg)
+                                        .stroke(Stroke::new(1.0_f32, theme.border_color))
+                                        .rounding(Rounding::same(7.0))
+                                        .min_size(Vec2::new(76.0, 34.0));
+                                        if ui.add(cancel_btn).clicked() {
+                                            action_close = true;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(10.0);
+                            ui.separator();
+                        });
                     });
-                });
-
-                ui.add_space(16.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Nút 1: Mở tệp từ máy tính
-                let open_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("Mở tệp từ máy tính... (.doc, .mwd, .txt)")
-                            .size(13.5)
-                            .color(theme.primary_accent)
-                            .strong(),
-                    )
-                    .min_size(Vec2::new(380.0, 36.0)),
-                );
-                if open_btn.clicked() {
-                    action_open = true;
-                }
-
-                ui.add_space(6.0);
-
-                // Nút 2: Tạo tài liệu trống
-                let new_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("Tạo trang tài liệu mới (Trống)")
-                            .size(13.0)
-                            .color(theme.text_main),
-                    )
-                    .min_size(Vec2::new(380.0, 32.0)),
-                );
-                if new_btn.clicked() {
-                    action_new = true;
-                }
-
-                ui.add_space(6.0);
-
-                // Nút 3: Dùng văn bản mẫu
-                let sample_btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("Dùng văn bản mẫu & Hướng dẫn")
-                            .size(13.0)
-                            .color(theme.text_main),
-                    )
-                    .min_size(Vec2::new(380.0, 32.0)),
-                );
-                if sample_btn.clicked() {
-                    action_sample = true;
-                }
-
-                if app.show_recovery_banner {
-                    ui.add_space(6.0);
-                    let rec_btn = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new("Khôi phục bản sao lưu tự động (.doc)")
-                                .size(13.0)
-                                .color(Color32::from_rgb(234, 88, 12))
-                                .strong(),
-                        )
-                        .min_size(Vec2::new(380.0, 32.0)),
-                    );
-                    if rec_btn.clicked() {
-                        action_recover = true;
-                    }
-                }
-
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(egui::RichText::new("Bỏ qua").size(12.0))
-                        .clicked()
-                    {
-                        action_close = true;
-                    }
-                });
             });
         });
 
@@ -987,15 +1850,633 @@ pub fn render_startup_modal(ctx: &egui::Context, app: &mut MyWordApp, theme: &Th
     } else if action_sample {
         app.show_startup_modal = false;
         app.editor = crate::editor::EditorState::default();
-        app.cached_layout = None;
-        app.scroll_to_caret = true;
+        app.reset_document_view_state();
         app.set_status("Đã nạp văn bản mẫu");
+    } else if action_plan {
+        app.show_startup_modal = false;
+        app.editor = build_brand_plan_sample();
+        app.reset_document_view_state();
+        app.set_status("Đã nạp mẫu Kế hoạch 2026");
     } else if action_recover {
         app.show_startup_modal = false;
         app.recover_autosave();
     } else if action_close {
         app.show_startup_modal = false;
     }
+}
+
+pub fn render_navigation_sidebar(
+    ctx: &egui::Context,
+    app: &mut MyWordApp,
+    theme: &ThemePalette,
+    total_pages: usize,
+    caret_page_idx: usize,
+) {
+    egui::SidePanel::left("nav_sidebar")
+        .resizable(false)
+        .exact_width(228.0)
+        .frame(
+            egui::Frame::none()
+                .fill(theme.sidebar_bg)
+                .inner_margin(egui::Margin::same(14.0))
+                .stroke(Stroke::new(1.0_f32, theme.border_color)),
+        )
+        .show(ctx, |ui| {
+            // Header panel
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Điều hướng")
+                        .size(13.5)
+                        .strong()
+                        .color(theme.text_main),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(
+                        ui,
+                        IconKind::ChevronLeft,
+                        "Thu gọn bảng điều hướng",
+                        false,
+                        theme.is_dark,
+                    )
+                    .clicked()
+                    {
+                        app.show_nav_panel = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+
+            // Ô tìm nhanh trong tài liệu
+            let find_resp = ui.add(
+                egui::TextEdit::singleline(&mut app.find_query)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Tìm trong tài liệu..."),
+            );
+            if find_resp.changed() {
+                app.editor.find_dirty = true;
+                if !app.find_query.is_empty() {
+                    app.find_bar_open = true;
+                }
+            }
+            ui.add_space(10.0);
+
+            // Tabs: Mục lục / Trang
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                for (tab, label) in [(NavTab::Outline, "Mục lục"), (NavTab::Pages, "Trang")] {
+                    let selected = app.nav_tab == tab;
+                    let col = if selected {
+                        theme.primary_accent
+                    } else {
+                        theme.text_muted
+                    };
+                    let resp = ui.add(
+                        egui::Button::new(if selected {
+                            egui::RichText::new(label).size(12.0).strong().color(col)
+                        } else {
+                            egui::RichText::new(label).size(12.0).color(col)
+                        })
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE)
+                        .min_size(Vec2::new(44.0, 24.0)),
+                    );
+                    if selected {
+                        let r = resp.rect;
+                        ui.painter().rect_filled(
+                            Rect::from_min_max(
+                                Pos2::new(r.min.x, r.max.y - 2.0),
+                                Pos2::new(r.max.x, r.max.y),
+                            ),
+                            Rounding::same(1.0),
+                            theme.primary_accent,
+                        );
+                    }
+                    if resp.clicked() {
+                        app.nav_tab = tab;
+                    }
+                }
+            });
+            ui.separator();
+            ui.add_space(6.0);
+
+            // Nội dung danh sách
+            let avail_h = (ui.available_height() - 96.0).max(120.0);
+            egui::ScrollArea::vertical()
+                .max_height(avail_h)
+                .show(ui, |ui| match app.nav_tab {
+                    NavTab::Outline => {
+                        let headings = app.extract_outline_headings();
+                        if headings.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Chưa có tiêu đề.\nHãy dùng Tiêu đề 1 hoặc Tiêu đề 2 trên thanh công cụ để tạo mục lục tự động.",
+                                )
+                                .size(11.0)
+                                .color(theme.text_muted),
+                            );
+                        } else {
+                            let active_idx = headings
+                                .iter()
+                                .rposition(|h| h.byte_offset <= app.editor.caret_byte_offset);
+                            let mut h1_count = 0usize;
+                            let mut jump_target: Option<usize> = None;
+
+                            for (idx, h) in headings.iter().enumerate() {
+                                let is_active = active_idx == Some(idx);
+                                if h.level == 1 {
+                                    h1_count += 1;
+                                }
+                                let indent = match h.level {
+                                    1 => 0.0,
+                                    2 => 10.0,
+                                    _ => 20.0,
+                                };
+                                let label = if h.level == 1 {
+                                    format!("{:02}  {}", h1_count, h.title)
+                                } else {
+                                    h.title.clone()
+                                };
+
+                                let (row_r, resp) = ui.allocate_exact_size(
+                                    Vec2::new(ui.available_width(), 30.0),
+                                    egui::Sense::click(),
+                                );
+                                if is_active {
+                                    ui.painter().rect_filled(
+                                        row_r,
+                                        Rounding::same(6.0),
+                                        theme.accent_tint,
+                                    );
+                                    ui.painter().rect_filled(
+                                        Rect::from_min_size(
+                                            Pos2::new(row_r.min.x, row_r.min.y + 6.0),
+                                            Vec2::new(3.0, row_r.height() - 12.0),
+                                        ),
+                                        Rounding::same(1.5),
+                                        theme.primary_accent,
+                                    );
+                                } else if resp.hovered() {
+                                    ui.painter().rect_filled(
+                                        row_r,
+                                        Rounding::same(6.0),
+                                        theme.input_bg,
+                                    );
+                                }
+                                let text_col = if is_active {
+                                    theme.primary_accent
+                                } else if h.level == 1 {
+                                    theme.text_main
+                                } else {
+                                    theme.text_muted
+                                };
+                                ui.painter().text(
+                                    Pos2::new(row_r.min.x + 10.0 + indent, row_r.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    label,
+                                    FontId::proportional(if h.level == 1 { 11.5 } else { 11.0 }),
+                                    text_col,
+                                );
+                                if resp.clicked() {
+                                    jump_target = Some(h.byte_offset);
+                                }
+                            }
+                            if let Some(off) = jump_target {
+                                app.jump_to_byte(off);
+                            }
+                        }
+                    }
+                    NavTab::Pages => {
+                        let mut jump_target: Option<usize> = None;
+                        for page_idx in 0..total_pages {
+                            let is_active = page_idx == caret_page_idx;
+                            let (row_r, resp) = ui.allocate_exact_size(
+                                Vec2::new(ui.available_width(), 32.0),
+                                egui::Sense::click(),
+                            );
+                            if is_active {
+                                ui.painter().rect_filled(
+                                    row_r,
+                                    Rounding::same(6.0),
+                                    theme.accent_tint,
+                                );
+                                ui.painter().rect_filled(
+                                    Rect::from_min_size(
+                                        Pos2::new(row_r.min.x, row_r.min.y + 6.0),
+                                        Vec2::new(3.0, row_r.height() - 12.0),
+                                    ),
+                                    Rounding::same(1.5),
+                                    theme.primary_accent,
+                                );
+                            } else if resp.hovered() {
+                                ui.painter().rect_filled(
+                                    row_r,
+                                    Rounding::same(6.0),
+                                    theme.input_bg,
+                                );
+                            }
+                            ui.painter().text(
+                                Pos2::new(row_r.min.x + 12.0, row_r.center().y),
+                                egui::Align2::LEFT_CENTER,
+                                format!("Trang {}", page_idx + 1),
+                                FontId::proportional(12.0),
+                                if is_active {
+                                    theme.primary_accent
+                                } else {
+                                    theme.text_main
+                                },
+                            );
+                            if resp.clicked()
+                                && let Some(cache) = &app.cached_layout
+                                && let Some(placed_list) = cache.pages.get(page_idx)
+                                && let Some(first_para) = placed_list.first()
+                                && let Some(para_data) = cache.paras.get(first_para.para_data_idx)
+                            {
+                                let (b, _) = first_para.byte_range(para_data, &app.editor.content);
+                                jump_target = Some(b);
+                            }
+                        }
+                        if let Some(off) = jump_target {
+                            app.jump_to_byte(off);
+                        }
+                    }
+                });
+
+            // Thẻ mẹo ở đáy sidebar (Mọi ý tưởng, một nơi.)
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                egui::Frame::none()
+                    .fill(if theme.is_dark {
+                        theme.card_bg
+                    } else {
+                        Color32::from_rgb(240, 243, 249)
+                    })
+                    .rounding(Rounding::same(8.0))
+                    .inner_margin(egui::Margin::same(12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        paint_inline_icon(ui, 16.0, IconKind::Book, theme.primary_accent);
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Mọi ý tưởng, một nơi.")
+                                .size(11.5)
+                                .strong()
+                                .color(theme.text_main),
+                        );
+                        ui.label(
+                            egui::RichText::new("Dùng tiêu đề để sắp xếp tài liệu.")
+                                .size(10.0)
+                                .color(theme.text_muted),
+                        );
+                    });
+            });
+        });
+}
+
+pub fn render_inspector_sidebar(ctx: &egui::Context, app: &mut MyWordApp, theme: &ThemePalette) {
+    egui::SidePanel::right("inspector_sidebar")
+        .resizable(false)
+        .exact_width(256.0)
+        .frame(
+            egui::Frame::none()
+                .fill(theme.surface_bg)
+                .inner_margin(egui::Margin::same(16.0))
+                .stroke(Stroke::new(1.0_f32, theme.border_color)),
+        )
+        .show(ctx, |ui| {
+            // Header
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Định dạng")
+                        .size(13.5)
+                        .strong()
+                        .color(theme.text_main),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(
+                        ui,
+                        IconKind::Close,
+                        "Đóng bảng Định dạng",
+                        false,
+                        theme.is_dark,
+                    )
+                    .clicked()
+                    {
+                        app.show_inspector_panel = false;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+
+            // Segmented Tabs: Văn bản / Trang
+            let seg_w = ui.available_width();
+            let (seg_r, _) = ui.allocate_exact_size(Vec2::new(seg_w, 34.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(seg_r, Rounding::same(7.0), theme.input_bg);
+            let half_w = (seg_w - 6.0) * 0.5;
+            for (idx, (tab, label)) in [
+                (InspectorTab::Text, "Văn bản"),
+                (InspectorTab::Page, "Trang"),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let tab_r = Rect::from_min_size(
+                    Pos2::new(seg_r.min.x + 3.0 + (idx as f32) * half_w, seg_r.min.y + 3.0),
+                    Vec2::new(half_w, 28.0),
+                );
+                let selected = app.inspector_tab == *tab;
+                if selected {
+                    ui.painter()
+                        .rect_filled(tab_r, Rounding::same(5.0), theme.surface_bg);
+                }
+                ui.painter().text(
+                    tab_r.center(),
+                    egui::Align2::CENTER_CENTER,
+                    *label,
+                    FontId::proportional(11.5),
+                    if selected {
+                        theme.primary_accent
+                    } else {
+                        theme.text_muted
+                    },
+                );
+                let resp = ui.interact(tab_r, ui.id().with(idx), egui::Sense::click());
+                if resp.clicked() {
+                    app.inspector_tab = *tab;
+                }
+            }
+            ui.add_space(14.0);
+
+            match app.inspector_tab {
+                InspectorTab::Text => {
+                    ui.label(
+                        egui::RichText::new("KIỂU VĂN BẢN")
+                            .size(10.0)
+                            .strong()
+                            .color(theme.text_muted),
+                    );
+                    ui.add_space(6.0);
+                    let cur_label = [
+                        DocumentPresetStyle::Normal,
+                        DocumentPresetStyle::Heading1,
+                        DocumentPresetStyle::Heading2,
+                        DocumentPresetStyle::Heading3,
+                        DocumentPresetStyle::Quote,
+                    ]
+                    .into_iter()
+                    .find(|p| is_preset_active(&app.editor.active_style, *p))
+                    .map(|p| p.label())
+                    .unwrap_or("Tùy chỉnh");
+
+                    egui::ComboBox::from_id_source("inspector_style_combo")
+                        .width(ui.available_width())
+                        .selected_text(cur_label)
+                        .show_ui(ui, |ui| {
+                            for preset in [
+                                DocumentPresetStyle::Normal,
+                                DocumentPresetStyle::Heading1,
+                                DocumentPresetStyle::Heading2,
+                                DocumentPresetStyle::Heading3,
+                                DocumentPresetStyle::Quote,
+                            ] {
+                                if ui
+                                    .selectable_label(
+                                        is_preset_active(&app.editor.active_style, preset),
+                                        preset.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    app.editor.apply_preset_style(preset);
+                                }
+                            }
+                        });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        egui::RichText::new("Phông chữ")
+                            .size(12.0)
+                            .strong()
+                            .color(theme.text_main),
+                    );
+                    ui.add_space(6.0);
+                    egui::Frame::none()
+                        .fill(theme.card_bg)
+                        .stroke(Stroke::new(1.0_f32, theme.border_color))
+                        .rounding(Rounding::same(6.0))
+                        .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(
+                                egui::RichText::new("Segoe UI (Hệ thống)")
+                                    .size(11.5)
+                                    .color(theme.text_main),
+                            );
+                        });
+                    ui.add_space(8.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Cỡ chữ:")
+                                .size(11.0)
+                                .color(theme.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("+").clicked() {
+                                let next = (app.editor.active_style.font_size + 1.0).min(48.0);
+                                app.editor.apply_format(|s| s.font_size = next);
+                            }
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{:.0} pt",
+                                    app.editor.active_style.font_size
+                                ))
+                                .size(12.0)
+                                .strong()
+                                .color(theme.text_main),
+                            );
+                            if ui.button("−").clicked() {
+                                let next = (app.editor.active_style.font_size - 1.0).max(8.0);
+                                app.editor.apply_format(|s| s.font_size = next);
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Màu chữ:")
+                                .size(11.0)
+                                .color(theme.text_muted),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            for rgb in [[22, 163, 74], [220, 38, 38], [64, 89, 220], [35, 43, 60]] {
+                                let sel = app.editor.active_style.color == rgb;
+                                let (cr, cresp) = ui.allocate_exact_size(
+                                    Vec2::new(18.0, 18.0),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(
+                                    cr.shrink(2.0),
+                                    Rounding::same(3.0),
+                                    Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+                                );
+                                if sel {
+                                    ui.painter().rect_stroke(
+                                        cr,
+                                        Rounding::same(4.0),
+                                        Stroke::new(1.5_f32, theme.primary_accent),
+                                    );
+                                }
+                                if cresp.clicked() {
+                                    app.editor.apply_format(|s| s.color = rgb);
+                                }
+                            }
+                        });
+                    });
+
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        egui::RichText::new("Đoạn văn")
+                            .size(12.0)
+                            .strong()
+                            .color(theme.text_main),
+                    );
+                    ui.add_space(8.0);
+                    let cur_align = app.editor.current_alignment();
+                    let align_w = ui.available_width();
+                    let (al_r, _) =
+                        ui.allocate_exact_size(Vec2::new(align_w, 34.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(al_r, Rounding::same(6.0), theme.input_bg);
+                    let seg_cell_w = (align_w - 6.0) / 4.0;
+                    for (idx, (align, icon)) in [
+                        (TextAlignment::Left, IconKind::AlignLeft),
+                        (TextAlignment::Center, IconKind::AlignCenter),
+                        (TextAlignment::Right, IconKind::AlignRight),
+                        (TextAlignment::Justify, IconKind::AlignJustify),
+                    ]
+                    .iter()
+                    .enumerate()
+                    {
+                        let cell_r = Rect::from_min_size(
+                            Pos2::new(
+                                al_r.min.x + 3.0 + (idx as f32) * seg_cell_w,
+                                al_r.min.y + 3.0,
+                            ),
+                            Vec2::new(seg_cell_w, 28.0),
+                        );
+                        let active = cur_align == *align;
+                        if active {
+                            ui.painter()
+                                .rect_filled(cell_r, Rounding::same(4.0), theme.surface_bg);
+                        }
+                        let icon_r = Rect::from_center_size(cell_r.center(), Vec2::splat(16.0));
+                        crate::icons::draw_icon(
+                            ui.painter(),
+                            icon_r,
+                            *icon,
+                            if active {
+                                theme.primary_accent
+                            } else {
+                                theme.text_muted
+                            },
+                        );
+                        if ui
+                            .interact(
+                                cell_r,
+                                ui.id().with(("insp_align", idx)),
+                                egui::Sense::click(),
+                            )
+                            .clicked()
+                        {
+                            app.editor.set_alignment(*align);
+                        }
+                    }
+
+                    // Thẻ tóm tắt khổ giấy A4 ở đáy
+                    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                        egui::Frame::none()
+                            .fill(theme.card_bg)
+                            .stroke(Stroke::new(1.0_f32, theme.border_color))
+                            .rounding(Rounding::same(7.0))
+                            .inner_margin(egui::Margin::same(12.0))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    paint_inline_icon(
+                                        ui,
+                                        20.0,
+                                        IconKind::PageDoc,
+                                        theme.primary_accent,
+                                    );
+                                    ui.add_space(6.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("A4 · Hướng dọc")
+                                                .size(12.0)
+                                                .strong()
+                                                .color(theme.text_main),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("21 × 29,7 cm")
+                                                .size(10.5)
+                                                .color(theme.text_muted),
+                                        );
+                                        if ui
+                                            .link(
+                                                egui::RichText::new("Thiết lập trang")
+                                                    .size(10.5)
+                                                    .color(theme.primary_accent),
+                                            )
+                                            .clicked()
+                                        {
+                                            app.inspector_tab = InspectorTab::Page;
+                                        }
+                                    });
+                                });
+                            });
+                    });
+                }
+                InspectorTab::Page => {
+                    ui.label(
+                        egui::RichText::new("CÀI ĐẶT TRANG GIẤY")
+                            .size(10.0)
+                            .strong()
+                            .color(theme.text_muted),
+                    );
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut app.show_ruler, "Hiển thị thước kẻ A4");
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut app.show_margins, "Hiển thị góc căn lề");
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut app.focus_mode, "Chế độ tập trung");
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        egui::RichText::new("Thông số chuẩn")
+                            .size(12.0)
+                            .strong()
+                            .color(theme.text_main),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Khổ giấy: A4 (595 × 842 pt)\nLề trang: 72 pt (2,54 cm)",
+                        )
+                        .size(11.0)
+                        .color(theme.text_muted),
+                    );
+                }
+            }
+        });
 }
 
 pub fn render_status_bar(
@@ -1018,92 +2499,133 @@ pub fn render_status_bar(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!("Trang {} / {}", caret_page_idx + 1, total_pages))
-                        .size(12.0)
-                        .color(theme.text_main)
-                        .strong(),
-                );
-                ui.separator();
-                ui.label(
-                    egui::RichText::new(format!("{} từ  •  {} ký tự", word_count, char_count))
-                        .size(12.0)
+                        .size(11.5)
                         .color(theme.text_muted),
                 );
-                ui.separator();
+                vertical_divider(ui, 14.0, theme.border_color);
                 ui.label(
-                    egui::RichText::new("UTF-8 NFC")
-                        .size(12.0)
+                    egui::RichText::new(format!("{} từ  •  {} ký tự", word_count, char_count))
+                        .size(11.5)
+                        .color(theme.text_muted),
+                );
+                vertical_divider(ui, 14.0, theme.border_color);
+                paint_inline_icon(ui, 14.0, IconKind::Check, Color32::from_rgb(22, 163, 74));
+                ui.label(
+                    egui::RichText::new("UTF-8 NFC  •  Tiếng Việt")
+                        .size(11.5)
                         .color(theme.text_muted),
                 );
 
                 if app.editor.unikey_backspace_count > 0 {
-                    ui.separator();
+                    vertical_divider(ui, 14.0, theme.border_color);
                     ui.label(
                         egui::RichText::new(format!(
                             "Backspace: {}",
                             app.editor.unikey_backspace_count
                         ))
-                        .size(12.0)
+                        .size(11.5)
                         .color(theme.primary_accent),
                     );
                 }
                 if let Some((msg, created_at)) = &app.status_message
                     && created_at.elapsed().as_secs() < 4
                 {
-                    ui.separator();
+                    vertical_divider(ui, 14.0, theme.border_color);
                     ui.label(
                         egui::RichText::new(msg)
                             .color(theme.primary_accent)
                             .strong()
-                            .size(12.0),
+                            .size(11.5),
                     );
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let zoom_pct = format!("{:.0}%", app.zoom * 100.0);
                     if ui
-                        .button(
-                            egui::RichText::new(zoom_pct)
-                                .size(11.5)
-                                .color(theme.text_main),
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(zoom_pct)
+                                    .size(11.5)
+                                    .color(theme.text_muted),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
                         )
                         .on_hover_text("Đặt lại cỡ 100%")
                         .clicked()
                     {
-                        app.zoom = 1.0;
+                        app.set_zoom(1.0);
                     }
                     if ui
                         .add(
                             egui::Button::new(egui::RichText::new("+").size(12.0))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE)
                                 .min_size(Vec2::new(18.0, 18.0)),
                         )
                         .on_hover_text("Phóng to")
                         .clicked()
                     {
-                        app.zoom = (app.zoom + 0.1).clamp(0.5, 2.0);
+                        app.set_zoom(app.zoom + 0.1);
                     }
-                    ui.add_sized(
-                        [85.0, 16.0],
-                        egui::Slider::new(&mut app.zoom, 0.5..=2.0)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    );
+                    let mut z = app.zoom;
+                    if ui
+                        .add_sized(
+                            [96.0, 16.0],
+                            egui::Slider::new(&mut z, 0.5..=2.0)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        )
+                        .changed()
+                    {
+                        app.set_zoom(z);
+                    }
                     if ui
                         .add(
                             egui::Button::new(egui::RichText::new("−").size(12.0))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE)
                                 .min_size(Vec2::new(18.0, 18.0)),
                         )
                         .on_hover_text("Thu nhỏ")
                         .clicked()
                     {
-                        app.zoom = (app.zoom - 0.1).clamp(0.5, 2.0);
+                        app.set_zoom(app.zoom - 0.1);
                     }
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new("A4 (210 × 297 mm)")
-                            .size(11.5)
-                            .color(theme.text_muted),
-                    );
-                    ui.separator();
+                    vertical_divider(ui, 14.0, theme.border_color);
+                    if icon_button(
+                        ui,
+                        IconKind::Ruler,
+                        "Bật / Tắt thước kẻ ngang A4",
+                        app.show_ruler,
+                        theme.is_dark,
+                    )
+                    .clicked()
+                    {
+                        app.show_ruler = !app.show_ruler;
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::Margins,
+                        "Bật / Tắt góc căn lề A4",
+                        app.show_margins,
+                        theme.is_dark,
+                    )
+                    .clicked()
+                    {
+                        app.show_margins = !app.show_margins;
+                    }
+                    if icon_button(
+                        ui,
+                        IconKind::Focus,
+                        "Chế độ tập trung",
+                        app.focus_mode,
+                        theme.is_dark,
+                    )
+                    .clicked()
+                    {
+                        app.focus_mode = !app.focus_mode;
+                    }
                     ui.label(
                         egui::RichText::new(format!("{:.0} FPS", app.fps))
                             .size(11.0)
@@ -1588,7 +3110,7 @@ fn paint_page_chrome(
     painter.rect_stroke(
         rect,
         4.0,
-        Stroke::new(1.0_f32, Color32::from_rgb(220, 225, 232)),
+        Stroke::new(1.0_f32, Color32::from_rgb(229, 233, 240)),
     );
 
     if show_margins {
@@ -1653,17 +3175,17 @@ fn paint_ruler(
     let bg_usable = if theme.is_dark {
         Color32::from_rgb(38, 42, 54)
     } else {
-        Color32::WHITE
+        Color32::from_rgb(248, 249, 252)
     };
     let bg_margin = if theme.is_dark {
         Color32::from_rgb(26, 29, 38)
     } else {
-        Color32::from_rgb(238, 242, 246)
+        Color32::from_rgb(236, 239, 245)
     };
     let tick_color = if theme.is_dark {
         Color32::from_rgb(100, 116, 139)
     } else {
-        Color32::from_rgb(148, 163, 184)
+        Color32::from_rgb(138, 148, 166)
     };
 
     // 1. Nền vùng lề trái và lề phải

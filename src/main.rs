@@ -22,9 +22,9 @@ fn load_app_icon() -> egui::IconData {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1080.0, 860.0])
-            .with_min_inner_size([760.0, 540.0])
-            .with_title("Rust Word Processor - Soạn thảo văn bản tiếng Việt")
+            .with_inner_size([1280.0, 860.0])
+            .with_min_inner_size([800.0, 560.0])
+            .with_title("My Word - Trình soạn thảo văn bản tiếng Việt")
             .with_icon(load_app_icon()),
         ..Default::default()
     };
